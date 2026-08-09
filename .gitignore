@@ -1,0 +1,22 @@
+# dependencies
+/node_modules
+
+# Next.js output
+/.next
+/out
+
+# local environment files (keep the committed template)
+.env*
+!.env.example
+
+# test coverage
+/coverage
+
+# logs and OS/editor files
+*.log
+.DS_Store
+Thumbs.db
+
+# TypeScript incremental build metadata
+*.tsbuildinfo
+next-env.d.ts
