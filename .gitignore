@@ -20,3 +20,6 @@ Thumbs.db
 # TypeScript incremental build metadata
 *.tsbuildinfo
 next-env.d.ts
+
+# generated Prisma client
+/src/generated/prisma

@@ -1,0 +1,176 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum ProjectStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+enum AssetKind {
+  PRODUCT
+  REFERENCE
+  GENERATED_BACKGROUND
+  EXPORT
+}
+
+enum JobType {
+  STYLE_ANALYSIS
+  IMAGE_GENERATION
+}
+
+enum JobStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELED
+}
+
+model Project {
+  id                 String              @id @default(cuid())
+  ownerId            String
+  name               String
+  status             ProjectStatus       @default(DRAFT)
+  productName        String
+  category           String
+  sellingPoints      String[]
+  targetAudience     String?
+  forbiddenClaims    String[]            @default([])
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  assets             Asset[]
+  styleSpecRevisions StyleSpecRevision[]
+  jobs               Job[]
+  generationResults  GenerationResult[]
+  designVersions     DesignVersion[]
+  exports            Export[]
+
+  @@index([ownerId])
+}
+
+model Asset {
+  id                    String            @id @default(cuid())
+  ownerId               String
+  projectId             String
+  kind                  AssetKind
+  objectKey             String            @unique
+  mimeType              String
+  byteSize              BigInt
+  width                 Int?
+  height                Int?
+  sha256                String
+  sourceAssetId         String?
+  createdAt             DateTime          @default(now())
+  project               Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sourceAsset           Asset?            @relation("AssetSource", fields: [sourceAssetId], references: [id], onDelete: SetNull)
+  derivedAssets         Asset[]           @relation("AssetSource")
+  generationResult      GenerationResult?
+  designVersionPreviews DesignVersion[]   @relation("DesignVersionPreview")
+  exports               Export[]
+
+  @@index([ownerId, projectId])
+  @@index([sourceAssetId])
+}
+
+model StyleSpecRevision {
+  id                String             @id @default(cuid())
+  ownerId           String
+  projectId         String
+  revisionNumber    Int
+  schemaVersion     String
+  specJson          Json
+  createdAt         DateTime           @default(now())
+  project           Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  jobs              Job[]
+  generationResults GenerationResult[]
+  designVersions    DesignVersion[]
+
+  @@unique([projectId, revisionNumber])
+  @@index([ownerId, projectId])
+}
+
+model Job {
+  id                  String             @id @default(cuid())
+  ownerId             String
+  projectId           String
+  type                JobType
+  status              JobStatus          @default(QUEUED)
+  idempotencyKey      String?
+  styleSpecRevisionId String?
+  provider            String?
+  providerJobId       String?
+  errorCode           String?
+  errorMessage        String?
+  attemptCount        Int                @default(0)
+  startedAt           DateTime?
+  completedAt         DateTime?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+  project             Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  styleSpecRevision   StyleSpecRevision? @relation(fields: [styleSpecRevisionId], references: [id], onDelete: SetNull)
+  generationResult    GenerationResult?
+
+  @@unique([projectId, type, idempotencyKey])
+  @@index([ownerId, projectId])
+  @@index([status, createdAt])
+  @@index([styleSpecRevisionId])
+}
+
+model GenerationResult {
+  id                  String            @id @default(cuid())
+  ownerId             String
+  projectId           String
+  jobId               String            @unique
+  assetId             String            @unique
+  styleSpecRevisionId String
+  createdAt           DateTime          @default(now())
+  project             Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  job                 Job               @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  asset               Asset             @relation(fields: [assetId], references: [id], onDelete: Restrict)
+  styleSpecRevision   StyleSpecRevision @relation(fields: [styleSpecRevisionId], references: [id], onDelete: Restrict)
+
+  @@index([ownerId, projectId])
+  @@index([styleSpecRevisionId])
+}
+
+model DesignVersion {
+  id                  String            @id @default(cuid())
+  ownerId             String
+  projectId           String
+  versionNumber       Int
+  styleSpecRevisionId String
+  designJson          Json
+  previewAssetId      String?
+  createdAt           DateTime          @default(now())
+  project             Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  styleSpecRevision   StyleSpecRevision @relation(fields: [styleSpecRevisionId], references: [id], onDelete: Restrict)
+  previewAsset        Asset?            @relation("DesignVersionPreview", fields: [previewAssetId], references: [id], onDelete: SetNull)
+  exports             Export[]
+
+  @@unique([projectId, versionNumber])
+  @@index([ownerId, projectId])
+  @@index([styleSpecRevisionId])
+  @@index([previewAssetId])
+}
+
+model Export {
+  id              String        @id @default(cuid())
+  ownerId         String
+  projectId       String
+  designVersionId String
+  assetId         String        @unique
+  createdAt       DateTime      @default(now())
+  project         Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  designVersion   DesignVersion @relation(fields: [designVersionId], references: [id], onDelete: Cascade)
+  asset           Asset         @relation(fields: [assetId], references: [id], onDelete: Restrict)
+
+  @@index([ownerId, projectId])
+  @@index([designVersionId])
+}

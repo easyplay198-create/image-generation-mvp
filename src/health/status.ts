@@ -1,18 +1,38 @@
-export function getFoundationHealth() {
+type HealthCheck = () => Promise<void>;
+
+type HealthChecks = {
+  database: HealthCheck;
+  objectStorage: HealthCheck;
+};
+
+async function getServiceStatus(check: HealthCheck) {
+  try {
+    await check();
+
+    return { status: "ok" } as const;
+  } catch {
+    return { status: "unavailable" } as const;
+  }
+}
+
+export async function getHealthStatus(checks: HealthChecks) {
+  const [database, objectStorage] = await Promise.all([
+    getServiceStatus(checks.database),
+    getServiceStatus(checks.objectStorage),
+  ]);
+  const status =
+    database.status === "ok" && objectStorage.status === "ok"
+      ? "ok"
+      : "degraded";
+
   return {
-    status: "degraded",
+    status,
     services: {
       web: {
         status: "ok",
       },
-      database: {
-        status: "not_checked",
-        detail: "Database connectivity is deferred to T-01.",
-      },
-      objectStorage: {
-        status: "not_checked",
-        detail: "Object-storage connectivity is deferred to T-01.",
-      },
+      database,
+      objectStorage,
     },
-  } as const;
+  };
 }

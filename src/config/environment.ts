@@ -29,3 +29,16 @@ export function assertServerEnvironment(
     );
   }
 }
+
+export function getRequiredEnvironmentVariable(
+  name: (typeof REQUIRED_SERVER_ENVIRONMENT_VARIABLES)[number],
+  environment: Environment = process.env,
+): string {
+  const value = environment[name]?.trim();
+
+  if (!value) {
+    throw new Error(`Missing required environment variable: ${name}`);
+  }
+
+  return value;
+}
