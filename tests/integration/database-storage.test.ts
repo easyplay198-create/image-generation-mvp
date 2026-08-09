@@ -51,6 +51,8 @@ describe("T-01 database boundary", () => {
         objectKey: `${ownerId}/product.png`,
         mimeType: "image/png",
         byteSize: BigInt(3),
+        width: 1,
+        height: 1,
         sha256: "product-sha256",
       },
     });
@@ -62,6 +64,8 @@ describe("T-01 database boundary", () => {
         objectKey: `${ownerId}/generated.png`,
         mimeType: "image/png",
         byteSize: BigInt(4),
+        width: 1,
+        height: 1,
         sha256: "generated-sha256",
         sourceAssetId: productAsset.id,
       },
@@ -110,6 +114,8 @@ describe("T-01 database boundary", () => {
         objectKey: `${ownerId}/export.png`,
         mimeType: "image/png",
         byteSize: BigInt(5),
+        width: 1,
+        height: 1,
         sha256: "export-sha256",
       },
     });

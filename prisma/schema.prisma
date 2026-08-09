@@ -63,8 +63,8 @@ model Asset {
   objectKey             String            @unique
   mimeType              String
   byteSize              BigInt
-  width                 Int?
-  height                Int?
+  width                 Int
+  height                Int
   sha256                String
   sourceAssetId         String?
   createdAt             DateTime          @default(now())

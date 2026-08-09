@@ -1,6 +1,6 @@
 # Image Generation MVP
 
-电商 AI 图片生成 MVP 的独立工程。当前基线交付 T-01 数据与对象存储基础，不包含上传 API、AI 图片生成、StyleSpec 业务逻辑或 Fabric.js 编辑器。
+电商 AI 图片生成 MVP 的独立工程。当前基线交付 T-02 商品项目与资产上传，不包含 AI 图片生成、StyleSpec 业务逻辑、Provider 或 Fabric.js 编辑器。
 
 ## 技术基线
 
@@ -11,6 +11,8 @@
 - Vitest
 - PostgreSQL + Prisma
 - AWS SDK for JavaScript v3（S3 兼容对象存储）
+- Zod 运行时输入校验
+- Sharp 图片签名后解码与尺寸读取
 
 ## 环境要求
 
@@ -42,6 +44,23 @@ npm run dev
 
 可以使用本机已有服务，也可以用 Docker 启动 PostgreSQL 和 MinIO。`/api/health` 会实际探测数据库与 bucket；任一依赖不可用时返回 HTTP 503 和 `degraded`，且不会暴露底层连接错误。
 
+## 商品项目与资产上传
+
+首页用于创建和列出当前 Demo owner 的商品项目。进入项目工作台后可以编辑商品信息、上传 1 张主商品图及最多 6 张参考图。上传只接受 PNG、JPEG 和 WebP，单文件上限为 20 MiB；服务端同时校验扩展名、声明 MIME、签名字节和真实解码结果。
+
+对象 Key 完全由服务端生成，不使用原始文件名。Bucket 保持私有；页面预览通过 owner-scoped 同源代理读取，不返回对象 Key 或签名 URL。对象写入后若容量检查或数据库写入失败，服务会补偿删除对象。
+
+当前 T-02 API：
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| `GET/POST` | `/api/projects` | 列出或创建商品项目 |
+| `GET/PATCH` | `/api/projects/:projectId` | 读取或更新 owner-scoped 项目 |
+| `POST` | `/api/projects/:projectId/assets` | 上传单张 `PRODUCT` 或 `REFERENCE` 图片 |
+| `GET` | `/api/projects/:projectId/assets/:assetId` | 读取私有图片预览 |
+
+所有 JSON 响应包含 `requestId`；错误使用稳定机器码且不返回内部堆栈。
+
 ## 数据库迁移与恢复
 
 ```powershell
@@ -51,6 +70,8 @@ npm run db:migrate:check
 ```
 
 `db:migrate:check` 连续执行两次 forward-only migration，用于验证空库初始化和重复执行的非破坏性。已应用迁移不得修改；后续 schema 变更必须新增迁移。
+
+T-02 迁移把 Asset 的 `width`/`height` 设为必填。通过正式 T-02 上传创建的记录总会写入真实解码尺寸；若本地曾手工插入空尺寸测试记录，迁移前必须删除该测试记录或补录经过核验的尺寸。
 
 - 可丢弃的本地数据库：删除并重建本地数据库，然后执行 `npm run db:migrate`；
 - 不可丢弃环境：先停止写入并从已验证备份恢复，再根据迁移记录决定是否重新执行 deploy；
@@ -76,8 +97,8 @@ npm run db:migrate:check
 ```text
 app/             页面与 Route Handler
 src/config/      服务端环境配置
-src/domain/      领域类型与规则（后续任务）
-src/services/    应用服务（后续任务）
+src/domain/      项目与上传运行时校验
+src/services/    owner-scoped 项目和资产应用服务
 src/providers/   AI Provider 边界（后续任务）
 src/storage/     PostgreSQL/S3 访问、owner 查询和补偿边界
 src/editor/      编辑器文档与行为（后续任务）
@@ -86,6 +107,6 @@ prisma/          Prisma schema 与 forward-only migrations
 tests/           unit / integration / e2e
 ```
 
-## T-01 范围说明
+## T-02 范围说明
 
-T-01 只建立七个基础数据模型、初始迁移、owner-scoped 查询入口、事务包装器、S3 适配器与对象/数据库失败补偿。没有上传 Route Handler、生成任务执行器、StyleSpec 校验或编辑器实现；这些属于后续任务。
+T-02 只实现项目创建/读取/更新、商品图与参考图上传、严格文件校验、Asset 保存和私有预览。没有 AI 生成、StyleSpec、Provider、任务 Worker、Fabric.js 编辑器或批量 SKU；这些属于后续任务或明确排除范围。
