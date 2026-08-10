@@ -4,35 +4,34 @@ import {
   errorResponse,
   successResponse,
 } from "@/src/http/api";
-import { JobService } from "@/src/services/job-service";
+import { GenerationService } from "@/src/services/generation-service";
 import { getDatabaseClient } from "@/src/storage/database";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-type JobContext = {
-  params: Promise<{ jobId: string }>;
+type ProjectContext = {
+  params: Promise<{ projectId: string }>;
 };
 
-export async function GET(_request: Request, context: JobContext) {
+export async function GET(_request: Request, context: ProjectContext) {
   const requestId = createRequestId();
-  const { jobId } = await context.params;
+  const { projectId } = await context.params;
   let ownerId: string | undefined;
 
   try {
     ownerId = getDemoOwnerId();
-    const job = await new JobService(getDatabaseClient()).getJob(
-      ownerId,
-      jobId,
-    );
+    const generations = await new GenerationService(
+      getDatabaseClient(),
+    ).listGenerations(ownerId, projectId);
 
-    return successResponse({ job }, requestId);
+    return successResponse({ generations }, requestId);
   } catch (error) {
     return errorResponse(error, {
       requestId,
       ownerId,
-      jobId,
-      operation: "job.read",
+      projectId,
+      operation: "image-generation.list",
     });
   }
 }

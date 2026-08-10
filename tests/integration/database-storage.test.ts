@@ -43,7 +43,7 @@ describe("T-01 database boundary", () => {
         sellingPoints: ["Test point"],
       },
     });
-    const productAsset = await database.asset.create({
+    await database.asset.create({
       data: {
         ownerId,
         projectId: project.id,
@@ -67,7 +67,6 @@ describe("T-01 database boundary", () => {
         width: 1,
         height: 1,
         sha256: "generated-sha256",
-        sourceAssetId: productAsset.id,
       },
     });
     const styleSpecRevision = await database.styleSpecRevision.create({
@@ -94,6 +93,20 @@ describe("T-01 database boundary", () => {
         jobId: job.id,
         assetId: generatedAsset.id,
         styleSpecRevisionId: styleSpecRevision.id,
+        providerName: "foundation-fixture",
+        providerRequestId: "foundation-provider-request",
+        requestId: "foundation-request",
+        durationMs: 1,
+        usageJson: {
+          generatedImages: 1,
+          inputUnits: null,
+          outputPixels: 1,
+        },
+        costMetadataJson: {
+          amount: "0.0000",
+          currency: "USD",
+          estimated: true,
+        },
       },
     });
     const designVersion = await database.designVersion.create({

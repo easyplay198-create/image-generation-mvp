@@ -19,23 +19,8 @@ export type StyleAnalysisResult = {
   providerRequestId: string | null;
 };
 
-export type StyleAnalyzerProviderErrorCode =
-  | "PROVIDER_AUTH_FAILED"
-  | "PROVIDER_RATE_LIMITED"
-  | "PROVIDER_POLICY_REJECTED"
-  | "PROVIDER_TIMEOUT";
-
-export class StyleAnalyzerProviderError extends Error {
-  constructor(
-    readonly code: StyleAnalyzerProviderErrorCode,
-    readonly retryable: boolean,
-    message: string,
-    readonly providerRequestId: string | null = null,
-  ) {
-    super(message);
-    this.name = "StyleAnalyzerProviderError";
-  }
-}
+export { ProviderAdapterError as StyleAnalyzerProviderError } from "@/src/providers/provider-error";
+export type { ProviderErrorCode as StyleAnalyzerProviderErrorCode } from "@/src/providers/provider-error";
 
 export interface StyleAnalyzerProvider {
   readonly name: string;

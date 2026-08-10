@@ -1,6 +1,6 @@
 # Image Generation MVP
 
-电商 AI 图片生成 MVP 的独立工程。当前基线交付 T-03 StyleSpec 风格分析链路；仍不包含真实 AI Provider、图片生成或 Fabric.js 编辑器。
+电商 AI 图片生成 MVP 的独立工程。当前基线交付 T-04 图片生成 Provider Adapter、确定性 Mock 和后台任务链路；仍不接入真实 AI 供应商，也不包含完整生成页面或 Fabric.js 编辑器。
 
 ## 技术基线
 
@@ -14,7 +14,7 @@
 - Zod 运行时输入校验
 - Sharp 图片签名后解码与尺寸读取
 - PostgreSQL 持久化 Job Worker
-- 可替换 Style Analyzer Provider（默认确定性 Mock）
+- 可替换 Style Analyzer 与 Image Generation Provider（默认确定性 Mock）
 
 ## 环境要求
 
@@ -36,6 +36,12 @@ npm run dev
 
 ```powershell
 npm run worker:style-analysis
+```
+
+需要执行图片生成任务时，再开一个终端启动图片生成 Worker：
+
+```powershell
+npm run worker:generation
 ```
 
 打开 [http://localhost:3000](http://localhost:3000)。健康端点为 [http://localhost:3000/api/health](http://localhost:3000/api/health)。
@@ -86,6 +92,25 @@ T-03 API：
 | `GET` | `/api/projects/:projectId/style-spec` | 读取最新 revision 和任务 |
 | `PUT` | `/api/projects/:projectId/style-spec` | 校验并保存用户编辑的新 revision |
 
+## 图片生成 Provider Adapter
+
+T-04 引入可替换的 `ImageGenerationProvider` 边界，业务服务和 Worker 只调用 `generateBackground()`、`getJobStatus()` 与 `normalizeUsage()`，不直接依赖任何供应商 SDK。所有适配器错误统一映射为认证、限流、策略拒绝、超时或无效响应；只有限流和超时允许重试，任务最多执行 2 次。
+
+默认 `IMAGE_GENERATION_PROVIDER=mock`，不会发送外部网络请求，也不需要 API Key。`IMAGE_GENERATION_MOCK_SCENARIO` 支持 `success`、`timeout`、`rate-limited`、`invalid-response` 和 `policy-rejected`。`external-placeholder` 只验证适配器可替换边界，并明确拒绝执行。
+
+创建任务时必须显式绑定一个属于当前项目的 StyleSpec revision，并提供幂等键。独立 Worker 原子领取任务，提交 Provider、轮询状态、验证返回图片的签名/解码结果/1080 × 1080 尺寸，然后把私有 `GENERATED_BACKGROUND` Asset、GenerationResult 和成功状态写入同一数据库事务。对象先写入存储而数据库事务失败时，Worker 会补偿删除对象；无结果记录时不会把 Job 标记为成功。
+
+GenerationResult 保存 `providerName`、供应商请求 ID、应用请求 ID、Provider duration、归一化用量及成本元数据。当前 Mock 生成背景占位图，只验证工程链路，不代表真实 AI 生成能力。
+
+T-04 API：
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| `POST` | `/api/projects/:projectId/generation-jobs` | 使用 revision 与幂等键创建生成任务 |
+| `GET` | `/api/jobs/:jobId` | owner-scoped 查询任意任务状态 |
+| `GET` | `/api/projects/:projectId/generations` | 列出项目生成结果与 Provider 元数据 |
+| `GET` | `/api/projects/:projectId/generations/:generationId/preview` | 读取私有生成背景预览 |
+
 ## 数据库迁移与恢复
 
 ```powershell
@@ -96,7 +121,7 @@ npm run db:migrate:check
 
 `db:migrate:check` 连续执行两次 forward-only migration，用于验证空库初始化和重复执行的非破坏性。已应用迁移不得修改；后续 schema 变更必须新增迁移。
 
-T-02 迁移把 Asset 的 `width`/`height` 设为必填。T-03 迁移补齐 Job 的输入快照、最大尝试次数、租约时间、Provider 名称/请求 ID 和完成时间，并保留现有 Job 数据。通过正式 T-02 上传创建的记录总会写入真实解码尺寸；若本地曾手工插入空尺寸测试记录，迁移前必须删除该测试记录或补录经过核验的尺寸。
+T-02 迁移把 Asset 的 `width`/`height` 设为必填。T-03 迁移补齐 Job 的输入快照、最大尝试次数、租约时间、Provider 名称/请求 ID 和完成时间，并保留现有 Job 数据。T-04 迁移为 GenerationResult 补齐 Provider、请求、耗时、用量和成本元数据。通过正式 T-02 上传创建的记录总会写入真实解码尺寸；若本地曾手工插入空尺寸测试记录，迁移前必须删除该测试记录或补录经过核验的尺寸。
 
 - 可丢弃的本地数据库：删除并重建本地数据库，然后执行 `npm run db:migrate`；
 - 不可丢弃环境：先停止写入并从已验证备份恢复，再根据迁移记录决定是否重新执行 deploy；
@@ -112,6 +137,7 @@ T-02 迁移把 Asset 的 `width`/`height` 设为必填。T-03 迁移补齐 Job �
 | `npm run test` | 运行单元测试基线 |
 | `npm run test:integration` | 使用 `DATABASE_URL` 运行数据库集成测试 |
 | `npm run worker:style-analysis` | 启动 PostgreSQL 风格分析 Worker |
+| `npm run worker:generation` | 启动 PostgreSQL 图片生成 Worker |
 | `npm run db:generate` | 生成 Prisma 客户端 |
 | `npm run db:migrate` | 应用尚未执行的数据库迁移 |
 | `npm run db:migrate:check` | 连续两次应用迁移，验证重复执行安全性 |
@@ -123,16 +149,16 @@ T-02 迁移把 Asset 的 `width`/`height` 设为必填。T-03 迁移补齐 Job �
 ```text
 app/             页面与 Route Handler
 src/config/      服务端环境配置
-src/domain/      项目、上传和 StyleSpec 运行时校验
+src/domain/      项目、上传、StyleSpec 和生成结果运行时校验
 src/services/    owner-scoped 项目、资产、任务和 revision 服务
-src/providers/   Style Analyzer Provider 适配器与确定性 Mock
+src/providers/   Style Analyzer/Image Generation 适配器与确定性 Mock
 src/storage/     PostgreSQL/S3 访问、owner 查询和补偿边界
 src/editor/      编辑器文档与行为（后续任务）
-worker/          PostgreSQL 原子领取与 StyleSpec 分析执行单元
+worker/          PostgreSQL 原子领取、StyleSpec 分析和图片生成执行单元
 prisma/          Prisma schema 与 forward-only migrations
 tests/           unit / integration / e2e
 ```
 
-## T-03 范围说明
+## T-04 范围说明
 
-T-03 在既有项目和上传能力上只增加 StyleSpec V1、Mock/占位 Provider、分析 Job Worker、状态轮询及 revision 查看/编辑。没有接入真实 AI 供应商，没有图片生成、Fabric.js 编辑器或批量 SKU；这些属于后续任务或明确排除范围。
+T-04 只增加 Image Generation Provider Adapter、统一错误、五种 Mock 场景、生成 Job Worker、结果持久化和只读结果 API。没有配置生产 API Key、绑定单一模型、接入真实 AI 供应商、开发完整图片生成页面、Fabric.js 编辑器或批量生成。本阶段是可测试的工程适配层，不是完整业务 MVP。
