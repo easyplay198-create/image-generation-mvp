@@ -20,6 +20,8 @@ export type GenerationResultDto = {
   projectId: string;
   jobId: string;
   styleSpecRevisionId: string;
+  status: "SUCCEEDED";
+  resultUrl: string;
   providerName: string;
   providerRequestId: string;
   requestId: string;
@@ -222,11 +224,15 @@ export function toGenerationResultDto(
     result.providerRequestId,
   );
 
+  const resultUrl = generationPreviewUrl(result.projectId, result.id);
+
   return {
     id: result.id,
     projectId: result.projectId,
     jobId: result.jobId,
     styleSpecRevisionId: result.styleSpecRevisionId,
+    status: "SUCCEEDED",
+    resultUrl,
     providerName: result.providerName,
     providerRequestId: result.providerRequestId,
     requestId: result.requestId,
@@ -244,10 +250,14 @@ export function toGenerationResultDto(
       width: result.asset.width,
       height: result.asset.height,
       sha256: result.asset.sha256,
-      previewUrl: `/api/projects/${encodeURIComponent(result.projectId)}/generations/${encodeURIComponent(result.id)}/preview`,
+      previewUrl: resultUrl,
     },
     createdAt: result.createdAt.toISOString(),
   };
+}
+
+function generationPreviewUrl(projectId: string, generationId: string): string {
+  return `/api/projects/${encodeURIComponent(projectId)}/generations/${encodeURIComponent(generationId)}/preview`;
 }
 
 function assertStoredStyleSpec(input: unknown) {

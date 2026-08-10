@@ -1,6 +1,6 @@
 # Image Generation MVP
 
-电商 AI 图片生成 MVP 的独立工程。当前基线交付 T-05 Fabric.js 分层编辑器、DesignDocument V1 和不可变版本保存接口；仍不接入真实 AI 供应商，也不包含自动设计、多人协作或 Photoshop 级能力。
+电商 AI 图片生成 MVP 的独立工程。当前基线交付 T-06 图片生成闭环：异步 GenerationJob、可替换 Provider Adapter、持久化 GenerationResult，以及 Fabric.js 生成背景加载；仍不接入真实 AI 供应商，也不包含自动设计、多人协作或 Photoshop 级能力。
 
 ## 技术基线
 
@@ -131,7 +131,22 @@ T-04 API：
 | --- | --- | --- |
 | `POST` | `/api/projects/:projectId/versions` | 校验 owner、revision、资产类型和完整文档后保存不可变快照 |
 
-保存结果包含递增 `versionNumber`、画布尺寸、StyleSpec revision 和完整 layer state。T-05 不提供版本列表、恢复或刷新后恢复；这些属于 T-06。
+保存结果包含递增 `versionNumber`、画布尺寸、StyleSpec revision 和完整 layer state。版本列表、恢复或刷新后恢复不在本次生成闭环范围内。
+
+## 图片生成闭环
+
+编辑器在商品图和 StyleSpec revision 就绪后，可创建单个背景生成任务。Web 请求只保存 `GenerationJob`，独立 generation worker 通过既有 Adapter 调用已配置 Provider；页面轮询 owner-scoped Job 状态，不显示无法验证的百分比。任务到达成功或失败等终态后停止轮询。
+
+成功结果保存关联的 Asset、StyleSpec revision、Provider、供应商请求 ID、应用请求 ID、状态、耗时和成本元数据。API 的 `resultUrl` 是 owner-scoped 同源私有预览路径，数据库仍只保存私有对象 Key，不持久化公开或过期签名 URL。结果自动加载到 Fabric.js 时仅替换背景资产引用，保留用户当前的商品、文字和装饰图层编辑；失败时画布不变，并可创建新任务重试。历史结果也可手动重新加载。
+
+本地验证闭环需要同时运行：
+
+```powershell
+npm run dev
+npm run worker:generation
+```
+
+默认 `IMAGE_GENERATION_PROVIDER=mock`，因此该闭环验证的是工程能力，不代表真实 AI 生成效果。没有引入商业供应商默认绑定、生产 Key、批量生成或自动发布。
 
 ## 数据库迁移与恢复
 
@@ -181,6 +196,6 @@ prisma/          Prisma schema 与 forward-only migrations
 tests/           unit / integration / e2e
 ```
 
-## T-05 范围说明
+## T-06 范围说明
 
-T-05 只增加 Fabric.js 分层编辑、DesignDocument V1、会话撤销/重做、已有背景切换和不可变版本保存端点。没有增加 AI 生成调用、真实模型 API、自动设计、版本列表/恢复、PNG 导出、多人协作或 Photoshop 级功能。本阶段仍不是完整业务 MVP。
+T-06 只把既有 GenerationJob/Provider/GenerationResult 后端链路接入编辑器，增加任务创建、终态轮询、失败重试、结果元数据展示与背景加载。没有增加真实模型 API、生产 Key、复杂 Prompt 市场、批量生成、自动发布或版本恢复。本阶段默认 Mock 仍只是工程闭环，不是完整业务 MVP。

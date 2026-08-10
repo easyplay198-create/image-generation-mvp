@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import {
   useCallback,
   useEffect,
@@ -9,6 +10,12 @@ import {
 } from "react";
 import type { Canvas } from "fabric";
 
+import {
+  findGenerationForJob,
+  isGenerationJobActive,
+  type GenerationJobView,
+  type GenerationResultView,
+} from "@/src/domain/generation-flow";
 import {
   createInitialDesignDocument,
   deserializeDesignDocument,
@@ -46,19 +53,9 @@ type StyleSpecState = {
   latestRevision: { id: string } | null;
 };
 
-type Generation = {
-  id: string;
-  asset: {
-    id: string;
-    width: number;
-    height: number;
-    previewUrl: string;
-  };
-};
-
 type EditorData = {
   project: ProjectData;
-  generations: Generation[];
+  generations: GenerationResultView[];
   styleSpec: StyleSpecState;
 };
 
@@ -85,6 +82,10 @@ export default function DesignEditor({ projectId }: { projectId: string }) {
   const [jsonDraft, setJsonDraft] = useState("");
   const [status, setStatus] = useState("正在准备 Fabric.js 编辑器…");
   const [busy, setBusy] = useState(false);
+  const [generationSubmitting, setGenerationSubmitting] = useState(false);
+  const [generationJob, setGenerationJob] = useState<GenerationJobView | null>(
+    null,
+  );
   const [historyState, setHistoryState] = useState({
     canUndo: false,
     canRedo: false,
@@ -272,16 +273,103 @@ export default function DesignEditor({ projectId }: { projectId: string }) {
     document?.layers.find((layer) => layer.type === "AI_BACKGROUND")
       ?.sourceAssetId ?? "";
 
-  async function commitAndRender(nextInput: DesignDocument) {
-    const next = parseDesignDocument(nextInput);
-    validateAvailableAssets(next, assetUrlsRef.current);
-    await renderOnCanvas(next);
-    const committed = historyRef.current?.push(next) ?? next;
-    documentRef.current = committed;
-    setDocument(committed);
-    setJsonDraft(serializeDesignDocument(committed));
-    syncHistoryState();
-  }
+  const commitAndRender = useCallback(
+    async (nextInput: DesignDocument) => {
+      const next = parseDesignDocument(nextInput);
+      validateAvailableAssets(next, assetUrlsRef.current);
+      await renderOnCanvas(next);
+      const committed = historyRef.current?.push(next) ?? next;
+      documentRef.current = committed;
+      setDocument(committed);
+      setJsonDraft(serializeDesignDocument(committed));
+      syncHistoryState();
+    },
+    [renderOnCanvas, syncHistoryState],
+  );
+
+  const applyGenerationBackground = useCallback(
+    async (generation: GenerationResultView) => {
+      const current = documentRef.current;
+      if (!current) throw new Error("设计文档尚未就绪。");
+      assetUrlsRef.current.set(generation.asset.id, generation.resultUrl);
+      await commitAndRender(
+        replaceBackgroundAsset(
+          current,
+          generation.asset.id,
+          `background-${crypto.randomUUID()}`,
+        ),
+      );
+    },
+    [commitAndRender],
+  );
+
+  const refreshGenerationsAndLoad = useCallback(
+    async (jobId: string) => {
+      const response = await fetch(`/api/projects/${projectId}/generations`);
+      const { generations } = await readApiResponse<{
+        generations: GenerationResultView[];
+      }>(response);
+      setData((current) =>
+        current ? { ...current, generations } : current,
+      );
+      for (const generation of generations) {
+        assetUrlsRef.current.set(generation.asset.id, generation.resultUrl);
+      }
+
+      const completed = findGenerationForJob(generations, jobId);
+      if (!completed) {
+        throw new Error("任务已成功，但持久化生成结果暂不可见，请稍后刷新。");
+      }
+      await applyGenerationBackground(completed);
+      setStatus(
+        "生成结果已保存并加载到画布；商品、文字和装饰图层保持不变。",
+      );
+    },
+    [applyGenerationBackground, projectId],
+  );
+
+  const generationJobId = generationJob?.id ?? null;
+  useEffect(() => {
+    if (!generationJobId) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const poll = async () => {
+      try {
+        const response = await fetch(`/api/jobs/${generationJobId}`);
+        const { job } = await readApiResponse<{ job: GenerationJobView }>(
+          response,
+        );
+        if (cancelled) return;
+        setGenerationJob(job);
+
+        if (isGenerationJobActive(job)) {
+          setStatus(
+            `生成任务 ${job.status}，worker 尝试 ${job.attemptCount}/${job.maxAttempts}。`,
+          );
+          timer = setTimeout(() => void poll(), 1_200);
+          return;
+        }
+        if (job.status === "SUCCEEDED") {
+          await refreshGenerationsAndLoad(job.id);
+          return;
+        }
+        setStatus(
+          `${job.errorCode ?? job.status}：${job.errorMessage ?? "生成任务未成功，可创建新任务重试。"}`,
+        );
+      } catch (error) {
+        if (cancelled) return;
+        setStatus(`任务状态读取失败，将继续轮询：${getErrorMessage(error)}`);
+        timer = setTimeout(() => void poll(), 2_500);
+      }
+    };
+
+    timer = setTimeout(() => void poll(), 400);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [generationJobId, refreshGenerationsAndLoad]);
 
   function updateLayer(
     layerId: string,
@@ -347,6 +435,55 @@ export default function DesignEditor({ projectId }: { projectId: string }) {
         sourceAssetId
           ? "背景已切换，商品、文字和装饰图层保持不变。"
           : "AI 背景已移除，其他图层保持不变。",
+      );
+    } catch (error) {
+      setStatus(getErrorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function createGenerationJob() {
+    const styleSpecRevisionId = documentRef.current?.styleSpecRevisionId;
+    if (!styleSpecRevisionId) {
+      setStatus("请先生成或保存 StyleSpec revision。");
+      return;
+    }
+
+    setGenerationSubmitting(true);
+    setStatus("正在创建背景生成任务…");
+    try {
+      const response = await fetch(
+        `/api/projects/${projectId}/generation-jobs`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            idempotencyKey: `${projectId}:generation:${crypto.randomUUID()}`,
+            styleSpecRevisionId,
+          }),
+        },
+      );
+      const { job } = await readApiResponse<{ job: GenerationJobView }>(
+        response,
+      );
+      setGenerationJob(job);
+      setStatus(
+        `生成任务已创建，由 ${job.providerName ?? "已配置 Adapter"} 异步处理。`,
+      );
+    } catch (error) {
+      setStatus(getErrorMessage(error));
+    } finally {
+      setGenerationSubmitting(false);
+    }
+  }
+
+  async function loadGenerationIntoCanvas(generation: GenerationResultView) {
+    setBusy(true);
+    try {
+      await applyGenerationBackground(generation);
+      setStatus(
+        "已加载选定生成结果；商品、文字和装饰图层保持不变。",
       );
     } catch (error) {
       setStatus(getErrorMessage(error));
@@ -518,6 +655,7 @@ export default function DesignEditor({ projectId }: { projectId: string }) {
   }
 
   const prerequisitesReady = Boolean(document && data);
+  const generationActive = isGenerationJobActive(generationJob);
 
   return (
     <section className="panel design-editor-panel">
@@ -574,6 +712,49 @@ export default function DesignEditor({ projectId }: { projectId: string }) {
       </div>
 
       {data && document && (
+        <div className="generation-flow-panel">
+          <div className="generation-flow-actions">
+            <div>
+              <strong>AI 背景生成</strong>
+              <p>
+                使用已配置的 Provider Adapter 创建异步任务；默认 Mock 不需要生产 Key。
+              </p>
+            </div>
+            <button
+              type="button"
+              className="primary-button inline-button"
+              disabled={generationSubmitting || generationActive}
+              onClick={() => void createGenerationJob()}
+            >
+              {generationSubmitting
+                ? "正在创建…"
+                : generationActive
+                  ? "生成处理中…"
+                  : generationJob && generationJob.status !== "SUCCEEDED"
+                    ? "重新生成"
+                    : "生成新背景"}
+            </button>
+          </div>
+          {generationJob && (
+            <div className="generation-job-state" aria-live="polite">
+              <span className={generationJobBadgeClass(generationJob.status)}>
+                {generationJob.status}
+              </span>
+              <small>
+                Provider: {generationJob.providerName ?? "待分配"} · 尝试 {generationJob.attemptCount}/
+                {generationJob.maxAttempts}
+              </small>
+              {generationJob.errorMessage && (
+                <small className="job-error">
+                  {generationJob.errorCode}: {generationJob.errorMessage}
+                </small>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {data && document && (
         <label className="background-picker">
           <span>AI 背景资产</span>
           <select
@@ -589,9 +770,43 @@ export default function DesignEditor({ projectId }: { projectId: string }) {
             ))}
           </select>
           {data.generations.length === 0 && (
-            <small>当前没有生成背景；T-05 不会主动调用 AI Provider。</small>
+            <small>当前没有生成背景；启动 generation worker 后可创建任务。</small>
           )}
         </label>
+      )}
+
+      {data && data.generations.length > 0 && (
+        <div className="generation-results" aria-label="生成结果">
+          {data.generations.map((generation) => (
+            <article className="generation-result-card" key={generation.id}>
+              <Image
+                src={generation.resultUrl}
+                alt="已生成的商品背景"
+                width={92}
+                height={92}
+                unoptimized
+              />
+              <div>
+                <strong>{generation.providerName}</strong>
+                <small>
+                  {generation.status} · request {generation.requestId}
+                </small>
+                <small>
+                  {generation.costMetadata.amount} {generation.costMetadata.currency}
+                  {generation.costMetadata.estimated ? "（估算）" : ""}
+                </small>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={busy}
+                  onClick={() => void loadGenerationIntoCanvas(generation)}
+                >
+                  加载到画布
+                </button>
+              </div>
+            </article>
+          ))}
+        </div>
       )}
 
       <div className="editor-layout">
@@ -922,7 +1137,9 @@ async function fetchEditorData(
   ]);
   const [{ project }, { generations }, styleSpec] = await Promise.all([
     readApiResponse<{ project: ProjectData }>(projectResponse),
-    readApiResponse<{ generations: Generation[] }>(generationResponse),
+    readApiResponse<{ generations: GenerationResultView[] }>(
+      generationResponse,
+    ),
     readApiResponse<StyleSpecState>(styleResponse),
   ]);
 
@@ -1000,6 +1217,16 @@ function formatLayerType(type: DesignLayer["type"]): string {
     case "DECORATION":
       return "装饰层";
   }
+}
+
+function generationJobBadgeClass(
+  status: GenerationJobView["status"],
+): string {
+  if (status === "SUCCEEDED") return "job-badge job-succeeded";
+  if (status === "FAILED" || status === "CANCELED") {
+    return "job-badge job-failed";
+  }
+  return "job-badge";
 }
 
 function roundForInput(value: number): number {
