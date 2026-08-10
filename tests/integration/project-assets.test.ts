@@ -104,6 +104,7 @@ describe("T-02 project and asset boundary", () => {
       });
     }
 
+    storage.waitForConcurrentPuts(2);
     const race = await Promise.allSettled([
       assetService.uploadAsset({
         ownerId,
@@ -177,12 +178,36 @@ describe("T-02 project and asset boundary", () => {
 class MemoryObjectStorage implements ObjectStorage {
   readonly objects = new Map<string, RetrievedObject>();
   deletes = 0;
+  private putBarrier?: {
+    remaining: number;
+    promise: Promise<void>;
+    release: () => void;
+  };
+
+  waitForConcurrentPuts(participants: number): void {
+    let release = () => {};
+    const promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    this.putBarrier = { remaining: participants, promise, release };
+  }
 
   async putObject(object: StoredObject): Promise<void> {
     this.objects.set(object.key, {
       body: Uint8Array.from(object.body),
       contentType: object.contentType,
     });
+
+    const barrier = this.putBarrier;
+    if (barrier) {
+      barrier.remaining -= 1;
+      if (barrier.remaining === 0) {
+        this.putBarrier = undefined;
+        barrier.release();
+      }
+      await barrier.promise;
+    }
   }
 
   async getObject(key: string): Promise<RetrievedObject> {
