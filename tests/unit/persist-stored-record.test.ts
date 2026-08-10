@@ -15,6 +15,10 @@ const object = {
 function createStorage(): ObjectStorage {
   return {
     putObject: vi.fn().mockResolvedValue(undefined),
+    getObject: vi.fn().mockResolvedValue({
+      body: new Uint8Array(),
+      contentType: "application/octet-stream",
+    }),
     deleteObject: vi.fn().mockResolvedValue(undefined),
     checkConnection: vi.fn().mockResolvedValue(undefined),
   };

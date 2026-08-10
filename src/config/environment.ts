@@ -42,3 +42,9 @@ export function getRequiredEnvironmentVariable(
 
   return value;
 }
+
+export function getDemoOwnerId(
+  environment: Environment = process.env,
+): string {
+  return getRequiredEnvironmentVariable("MVP_DEMO_USER_ID", environment);
+}

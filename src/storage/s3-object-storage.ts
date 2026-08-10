@@ -1,12 +1,17 @@
 import {
   DeleteObjectCommand,
+  GetObjectCommand,
   HeadBucketCommand,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
 
 import { getRequiredEnvironmentVariable } from "@/src/config/environment";
-import type { ObjectStorage, StoredObject } from "@/src/storage/object-storage";
+import type {
+  ObjectStorage,
+  RetrievedObject,
+  StoredObject,
+} from "@/src/storage/object-storage";
 
 export class S3ObjectStorage implements ObjectStorage {
   constructor(
@@ -33,6 +38,24 @@ export class S3ObjectStorage implements ObjectStorage {
         Key: key,
       }),
     );
+  }
+
+  async getObject(key: string): Promise<RetrievedObject> {
+    const response = await this.client.send(
+      new GetObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+      }),
+    );
+
+    if (!response.Body) {
+      throw new Error("S3 returned an object without a body.");
+    }
+
+    return {
+      body: await response.Body.transformToByteArray(),
+      contentType: response.ContentType ?? "application/octet-stream",
+    };
   }
 
   async checkConnection(): Promise<void> {
