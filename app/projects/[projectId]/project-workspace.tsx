@@ -34,11 +34,41 @@ type EditableProject = {
   forbiddenClaims: string;
 };
 
+type StyleAnalysisJob = {
+  id: string;
+  status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELED";
+  attemptCount: number;
+  maxAttempts: number;
+  styleSpecRevisionId: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+};
+
+type StyleSpecRevision = {
+  id: string;
+  revisionNumber: number;
+  schemaVersion: "1.0";
+  spec: Record<string, unknown>;
+  createdAt: string;
+};
+
+type StyleSpecState = {
+  latestRevision: StyleSpecRevision | null;
+  latestJob: StyleAnalysisJob | null;
+};
+
 export default function ProjectWorkspace({ projectId }: { projectId: string }) {
   const [project, setProject] = useState<Project | null>(null);
   const [form, setForm] = useState<EditableProject | null>(null);
+  const [styleSpecState, setStyleSpecState] = useState<StyleSpecState | null>(
+    null,
+  );
+  const [styleSpecJson, setStyleSpecJson] = useState("");
   const [status, setStatus] = useState("正在加载项目…");
   const [busy, setBusy] = useState(false);
+  const [styleBusy, setStyleBusy] = useState(false);
+  const polledJobId = styleSpecState?.latestJob?.id;
+  const polledJobStatus = styleSpecState?.latestJob?.status;
 
   useEffect(() => {
     let cancelled = false;
@@ -58,6 +88,80 @@ export default function ProjectWorkspace({ projectId }: { projectId: string }) {
       cancelled = true;
     };
   }, [projectId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void fetchStyleSpecState(projectId)
+      .then((nextState) => {
+        if (!cancelled) applyStyleSpecState(nextState);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setStatus(getErrorMessage(error));
+      });
+
+    function applyStyleSpecState(nextState: StyleSpecState) {
+      setStyleSpecState(nextState);
+      setStyleSpecJson(
+        nextState.latestRevision
+          ? JSON.stringify(nextState.latestRevision.spec, null, 2)
+          : "",
+      );
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+
+  useEffect(() => {
+    if (!polledJobId || !isActiveJobStatus(polledJobStatus)) return;
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const poll = async () => {
+      try {
+        const job = await fetchStyleAnalysisJob(polledJobId);
+        if (cancelled) return;
+
+        setStyleSpecState((current) =>
+          current ? { ...current, latestJob: job } : current,
+        );
+
+        if (isActiveJob(job)) {
+          timer = setTimeout(poll, 1_200);
+          return;
+        }
+
+        if (job.status === "SUCCEEDED") {
+          const nextState = await fetchStyleSpecState(projectId);
+          if (cancelled) return;
+          setStyleSpecState(nextState);
+          setStyleSpecJson(
+            nextState.latestRevision
+              ? JSON.stringify(nextState.latestRevision.spec, null, 2)
+              : "",
+          );
+          setStatus("风格分析完成，StyleSpec revision 已保存。 ");
+        } else {
+          setStatus(job.errorMessage ?? "风格分析任务失败。 ");
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setStatus(getErrorMessage(error));
+          timer = setTimeout(poll, 2_500);
+        }
+      }
+    };
+
+    timer = setTimeout(poll, 500);
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [polledJobId, polledJobStatus, projectId]);
 
   async function refreshProject() {
     const nextProject = await fetchProject(projectId);
@@ -130,6 +234,70 @@ export default function ProjectWorkspace({ projectId }: { projectId: string }) {
     }
   }
 
+  async function startStyleAnalysis() {
+    setStyleBusy(true);
+    setStatus("正在创建风格分析任务…");
+
+    try {
+      const response = await fetch(
+        `/api/projects/${projectId}/style-analysis-jobs`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            idempotencyKey: `${projectId}:${crypto.randomUUID()}`,
+          }),
+        },
+      );
+      const payload = await readApiResponse<{ job: StyleAnalysisJob }>(response);
+      setStyleSpecState((current) => ({
+        latestRevision: current?.latestRevision ?? null,
+        latestJob: payload.job,
+      }));
+      setStatus("风格分析任务已排队，请保持 Worker 运行。 ");
+    } catch (error) {
+      setStatus(getErrorMessage(error));
+    } finally {
+      setStyleBusy(false);
+    }
+  }
+
+  async function saveStyleSpec(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setStyleBusy(true);
+    setStatus("正在校验并保存新的 StyleSpec revision…");
+
+    try {
+      let spec: unknown;
+      try {
+        spec = JSON.parse(styleSpecJson) as unknown;
+      } catch {
+        throw new Error("StyleSpec 编辑内容不是有效的 JSON。");
+      }
+
+      const response = await fetch(`/api/projects/${projectId}/style-spec`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ spec }),
+      });
+      const payload = await readApiResponse<{ revision: StyleSpecRevision }>(
+        response,
+      );
+      setStyleSpecState((current) => ({
+        latestRevision: payload.revision,
+        latestJob: current?.latestJob ?? null,
+      }));
+      setStyleSpecJson(JSON.stringify(payload.revision.spec, null, 2));
+      setStatus(
+        `StyleSpec revision ${payload.revision.revisionNumber} 已保存。`,
+      );
+    } catch (error) {
+      setStatus(getErrorMessage(error));
+    } finally {
+      setStyleBusy(false);
+    }
+  }
+
   if (!project || !form) {
     return (
       <main className="app-shell compact-shell">
@@ -148,6 +316,9 @@ export default function ProjectWorkspace({ projectId }: { projectId: string }) {
   const productAsset = project.assets.find((asset) => asset.kind === "PRODUCT");
   const references = project.assets.filter((asset) => asset.kind === "REFERENCE");
   const remainingReferences = Math.max(0, 6 - references.length);
+  const styleJob = styleSpecState?.latestJob ?? null;
+  const styleRevision = styleSpecState?.latestRevision ?? null;
+  const analysisActive = Boolean(styleJob && isActiveJob(styleJob));
 
   return (
     <main className="app-shell compact-shell">
@@ -286,6 +457,81 @@ export default function ProjectWorkspace({ projectId }: { projectId: string }) {
         </section>
       </div>
 
+      <section className="panel style-spec-panel">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">StyleSpec V1</p>
+            <h2>风格分析与可编辑 revision</h2>
+          </div>
+          {styleJob && (
+            <span className={`job-badge job-${styleJob.status.toLowerCase()}`}>
+              {formatJobStatus(styleJob.status)}
+            </span>
+          )}
+        </div>
+
+        <div className="analysis-actions">
+          <div>
+            <strong>从参考图分析结构化风格</strong>
+            <p>
+              当前使用确定性 Mock Provider。任务由独立 Worker 原子领取，完成后自动保存新 revision。
+            </p>
+            {references.length === 0 && (
+              <small>请先上传至少 1 张参考图。</small>
+            )}
+            {styleJob?.errorCode && styleJob.status === "FAILED" && (
+              <small className="job-error">
+                {styleJob.errorCode}：{styleJob.errorMessage}
+              </small>
+            )}
+          </div>
+          <button
+            className="primary-button inline-button"
+            type="button"
+            disabled={styleBusy || analysisActive || references.length === 0}
+            onClick={() => void startStyleAnalysis()}
+          >
+            {analysisActive
+              ? `分析中（${styleJob?.attemptCount ?? 0}/${styleJob?.maxAttempts ?? 2}）`
+              : styleJob?.status === "FAILED"
+                ? "重新分析"
+                : "开始风格分析"}
+          </button>
+        </div>
+
+        {styleRevision ? (
+          <form className="style-editor" onSubmit={saveStyleSpec}>
+            <div className="revision-meta">
+              <strong>当前 revision {styleRevision.revisionNumber}</strong>
+              <span>
+                Schema {styleRevision.schemaVersion} · {formatDate(styleRevision.createdAt)}
+              </span>
+            </div>
+            <label>
+              <span>StyleSpec JSON（修改后保存会创建新 revision）</span>
+              <textarea
+                className="style-json"
+                rows={24}
+                spellCheck={false}
+                value={styleSpecJson}
+                onChange={(event) => setStyleSpecJson(event.target.value)}
+              />
+            </label>
+            <button
+              className="primary-button"
+              type="submit"
+              disabled={styleBusy || analysisActive}
+            >
+              {styleBusy ? "处理中…" : "校验并保存新 revision"}
+            </button>
+          </form>
+        ) : (
+          <div className="empty-state style-empty">
+            分析成功后会在这里显示完整 StyleSpec；无效 Provider JSON 不会写入数据库。
+          </div>
+        )}
+      </section>
+
       <p className="status floating-status" aria-live="polite">
         {status}
       </p>
@@ -371,6 +617,24 @@ async function fetchProject(projectId: string): Promise<Project> {
   return payload.project;
 }
 
+async function fetchStyleSpecState(projectId: string): Promise<StyleSpecState> {
+  const response = await fetch(`/api/projects/${projectId}/style-spec`, {
+    cache: "no-store",
+  });
+  const payload = await readApiResponse<{ styleSpec: StyleSpecState }>(response);
+
+  return payload.styleSpec;
+}
+
+async function fetchStyleAnalysisJob(jobId: string) {
+  const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`, {
+    cache: "no-store",
+  });
+  const payload = await readApiResponse<{ job: StyleAnalysisJob }>(response);
+
+  return payload.job;
+}
+
 function toLines(value: string) {
   return value
     .split("\n")
@@ -396,4 +660,31 @@ function getErrorMessage(error: unknown) {
 
 function formatBytes(value: number) {
   return `${(value / 1024 / 1024).toFixed(2)} MiB`;
+}
+
+function isActiveJob(job: StyleAnalysisJob) {
+  return isActiveJobStatus(job.status);
+}
+
+function isActiveJobStatus(status: StyleAnalysisJob["status"] | undefined) {
+  return status === "QUEUED" || status === "RUNNING";
+}
+
+function formatJobStatus(status: StyleAnalysisJob["status"]) {
+  const labels: Record<StyleAnalysisJob["status"], string> = {
+    QUEUED: "已排队",
+    RUNNING: "分析中",
+    SUCCEEDED: "已完成",
+    FAILED: "失败",
+    CANCELED: "已取消",
+  };
+
+  return labels[status];
+}
+
+function formatDate(value: string) {
+  return new Intl.DateTimeFormat("zh-CN", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
 }

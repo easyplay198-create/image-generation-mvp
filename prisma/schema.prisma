@@ -103,14 +103,17 @@ model Job {
   type                JobType
   status              JobStatus          @default(QUEUED)
   idempotencyKey      String?
+  inputJson           Json               @default("{}")
   styleSpecRevisionId String?
-  provider            String?
-  providerJobId       String?
+  providerName        String?
+  providerRequestId   String?
   errorCode           String?
   errorMessage        String?
   attemptCount        Int                @default(0)
+  maxAttempts         Int                @default(2)
+  lockedAt            DateTime?
   startedAt           DateTime?
-  completedAt         DateTime?
+  finishedAt          DateTime?
   createdAt           DateTime           @default(now())
   updatedAt           DateTime           @updatedAt
   project             Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
@@ -120,6 +123,7 @@ model Job {
   @@unique([projectId, type, idempotencyKey])
   @@index([ownerId, projectId])
   @@index([status, createdAt])
+  @@index([status, lockedAt])
   @@index([styleSpecRevisionId])
 }
 
