@@ -2,7 +2,17 @@
 
 import Image from "next/image";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useEffect, useState, type FormEvent } from "react";
+
+const DesignEditor = dynamic(() => import("./design-editor"), {
+  ssr: false,
+  loading: () => (
+    <section className="panel design-editor-panel">
+      <p className="status">正在加载 Fabric.js 编辑器…</p>
+    </section>
+  ),
+});
 
 type Asset = {
   id: string;
@@ -531,6 +541,8 @@ export default function ProjectWorkspace({ projectId }: { projectId: string }) {
           </div>
         )}
       </section>
+
+      <DesignEditor projectId={projectId} />
 
       <p className="status floating-status" aria-live="polite">
         {status}

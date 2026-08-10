@@ -115,7 +115,9 @@ describe("T-01 database boundary", () => {
         projectId: project.id,
         versionNumber: 1,
         styleSpecRevisionId: styleSpecRevision.id,
-        designJson: { fixture: true },
+        canvasWidth: 1080,
+        canvasHeight: 1080,
+        documentJson: { fixture: true },
         previewAssetId: generatedAsset.id,
       },
     });
