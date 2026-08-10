@@ -7,6 +7,14 @@ export type ApiErrorCode =
   | "PROJECT_NOT_FOUND"
   | "ASSET_NOT_FOUND"
   | "ASSET_LIMIT_REACHED"
+  | "STYLE_SPEC_INVALID"
+  | "JOB_CONFLICT"
+  | "JOB_NOT_FOUND"
+  | "PROVIDER_AUTH_FAILED"
+  | "PROVIDER_RATE_LIMITED"
+  | "PROVIDER_POLICY_REJECTED"
+  | "PROVIDER_TIMEOUT"
+  | "PROVIDER_INVALID_RESPONSE"
   | "INTERNAL_ERROR";
 
 export class ApiError extends Error {
@@ -38,6 +46,7 @@ type ErrorContext = {
   operation: string;
   ownerId?: string;
   projectId?: string;
+  jobId?: string;
 };
 
 export function errorResponse(error: unknown, context: ErrorContext): Response {
@@ -57,6 +66,7 @@ export function errorResponse(error: unknown, context: ErrorContext): Response {
       requestId: context.requestId,
       ownerId: context.ownerId,
       projectId: context.projectId,
+      jobId: context.jobId,
       operation: context.operation,
       result: "failed",
       errorCode: apiError.code,

@@ -1,6 +1,6 @@
 # Image Generation MVP
 
-电商 AI 图片生成 MVP 的独立工程。当前基线交付 T-02 商品项目与资产上传，不包含 AI 图片生成、StyleSpec 业务逻辑、Provider 或 Fabric.js 编辑器。
+电商 AI 图片生成 MVP 的独立工程。当前基线交付 T-03 StyleSpec 风格分析链路；仍不包含真实 AI Provider、图片生成或 Fabric.js 编辑器。
 
 ## 技术基线
 
@@ -13,6 +13,8 @@
 - AWS SDK for JavaScript v3（S3 兼容对象存储）
 - Zod 运行时输入校验
 - Sharp 图片签名后解码与尺寸读取
+- PostgreSQL 持久化 Job Worker
+- 可替换 Style Analyzer Provider（默认确定性 Mock）
 
 ## 环境要求
 
@@ -28,6 +30,12 @@ npm install
 Copy-Item .env.example .env
 npm run db:migrate
 npm run dev
+```
+
+另开一个终端启动风格分析 Worker：
+
+```powershell
+npm run worker:style-analysis
 ```
 
 打开 [http://localhost:3000](http://localhost:3000)。健康端点为 [http://localhost:3000/api/health](http://localhost:3000/api/health)。
@@ -61,6 +69,23 @@ npm run dev
 
 所有 JSON 响应包含 `requestId`；错误使用稳定机器码且不返回内部堆栈。
 
+## StyleSpec 风格分析
+
+项目至少有 1 张参考图后，可在工作台创建风格分析任务。Web 只把任务以 `QUEUED` 状态写入 PostgreSQL；独立 Worker 使用行锁和 `SKIP LOCKED` 原子领取，按 `QUEUED → RUNNING → SUCCEEDED/FAILED` 更新状态。Worker 中断后，过期租约会在剩余尝试次数内重新排队；仅限流和超时错误自动重试，最多执行 2 次。
+
+默认 `STYLE_ANALYZER_PROVIDER=mock`，不会发送外部网络请求。`STYLE_ANALYZER_MOCK_SCENARIO` 支持 `success`、`auth-failure`、`rate-limited`、`policy-rejected`、`timeout` 和 `invalid-response`，用于可重复测试成功和五类失败。`external-placeholder` 只保留真实适配器边界并明确拒绝执行，不会调用任何真实 AI API。
+
+Provider 输出始终先作为不可信 JSON 处理。只有通过 StyleSpec V1 严格 Schema 的结果才会在同一事务内创建 revision 并把 Job 标记为成功。V1 包含 `summary`、`moodKeywords`、`palette`、`background`、`composition`、`typography`、`decorations` 和 `negativeConstraints`，并校验字段长度、数组数量、`#RRGGBB` 颜色和未知字段。工作台可查看并编辑完整 JSON；每次保存都会创建不可变的新 revision。
+
+T-03 API：
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| `POST` | `/api/projects/:projectId/style-analysis-jobs` | 使用幂等键创建分析任务 |
+| `GET` | `/api/jobs/:jobId` | owner-scoped 查询任务状态 |
+| `GET` | `/api/projects/:projectId/style-spec` | 读取最新 revision 和任务 |
+| `PUT` | `/api/projects/:projectId/style-spec` | 校验并保存用户编辑的新 revision |
+
 ## 数据库迁移与恢复
 
 ```powershell
@@ -71,7 +96,7 @@ npm run db:migrate:check
 
 `db:migrate:check` 连续执行两次 forward-only migration，用于验证空库初始化和重复执行的非破坏性。已应用迁移不得修改；后续 schema 变更必须新增迁移。
 
-T-02 迁移把 Asset 的 `width`/`height` 设为必填。通过正式 T-02 上传创建的记录总会写入真实解码尺寸；若本地曾手工插入空尺寸测试记录，迁移前必须删除该测试记录或补录经过核验的尺寸。
+T-02 迁移把 Asset 的 `width`/`height` 设为必填。T-03 迁移补齐 Job 的输入快照、最大尝试次数、租约时间、Provider 名称/请求 ID 和完成时间，并保留现有 Job 数据。通过正式 T-02 上传创建的记录总会写入真实解码尺寸；若本地曾手工插入空尺寸测试记录，迁移前必须删除该测试记录或补录经过核验的尺寸。
 
 - 可丢弃的本地数据库：删除并重建本地数据库，然后执行 `npm run db:migrate`；
 - 不可丢弃环境：先停止写入并从已验证备份恢复，再根据迁移记录决定是否重新执行 deploy；
@@ -86,6 +111,7 @@ T-02 迁移把 Asset 的 `width`/`height` 设为必填。通过正式 T-02 上�
 | `npm run typecheck` | 运行 TypeScript 类型检查 |
 | `npm run test` | 运行单元测试基线 |
 | `npm run test:integration` | 使用 `DATABASE_URL` 运行数据库集成测试 |
+| `npm run worker:style-analysis` | 启动 PostgreSQL 风格分析 Worker |
 | `npm run db:generate` | 生成 Prisma 客户端 |
 | `npm run db:migrate` | 应用尚未执行的数据库迁移 |
 | `npm run db:migrate:check` | 连续两次应用迁移，验证重复执行安全性 |
@@ -97,16 +123,16 @@ T-02 迁移把 Asset 的 `width`/`height` 设为必填。通过正式 T-02 上�
 ```text
 app/             页面与 Route Handler
 src/config/      服务端环境配置
-src/domain/      项目与上传运行时校验
-src/services/    owner-scoped 项目和资产应用服务
-src/providers/   AI Provider 边界（后续任务）
+src/domain/      项目、上传和 StyleSpec 运行时校验
+src/services/    owner-scoped 项目、资产、任务和 revision 服务
+src/providers/   Style Analyzer Provider 适配器与确定性 Mock
 src/storage/     PostgreSQL/S3 访问、owner 查询和补偿边界
 src/editor/      编辑器文档与行为（后续任务）
-worker/          后台任务执行单元（后续任务）
+worker/          PostgreSQL 原子领取与 StyleSpec 分析执行单元
 prisma/          Prisma schema 与 forward-only migrations
 tests/           unit / integration / e2e
 ```
 
-## T-02 范围说明
+## T-03 范围说明
 
-T-02 只实现项目创建/读取/更新、商品图与参考图上传、严格文件校验、Asset 保存和私有预览。没有 AI 生成、StyleSpec、Provider、任务 Worker、Fabric.js 编辑器或批量 SKU；这些属于后续任务或明确排除范围。
+T-03 在既有项目和上传能力上只增加 StyleSpec V1、Mock/占位 Provider、分析 Job Worker、状态轮询及 revision 查看/编辑。没有接入真实 AI 供应商，没有图片生成、Fabric.js 编辑器或批量 SKU；这些属于后续任务或明确排除范围。
