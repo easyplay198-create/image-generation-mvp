@@ -1,6 +1,6 @@
 # Image Generation MVP
 
-电商 AI 图片生成 MVP 的独立工程。当前基线交付 T-04 图片生成 Provider Adapter、确定性 Mock 和后台任务链路；仍不接入真实 AI 供应商，也不包含完整生成页面或 Fabric.js 编辑器。
+电商 AI 图片生成 MVP 的独立工程。当前基线交付 T-05 Fabric.js 分层编辑器、DesignDocument V1 和不可变版本保存接口；仍不接入真实 AI 供应商，也不包含自动设计、多人协作或 Photoshop 级能力。
 
 ## 技术基线
 
@@ -13,6 +13,7 @@
 - AWS SDK for JavaScript v3（S3 兼容对象存储）
 - Zod 运行时输入校验
 - Sharp 图片签名后解码与尺寸读取
+- Fabric.js 7（client-only 分层画布）
 - PostgreSQL 持久化 Job Worker
 - 可替换 Style Analyzer 与 Image Generation Provider（默认确定性 Mock）
 
@@ -111,6 +112,27 @@ T-04 API：
 | `GET` | `/api/projects/:projectId/generations` | 列出项目生成结果与 Provider 元数据 |
 | `GET` | `/api/projects/:projectId/generations/:generationId/preview` | 读取私有生成背景预览 |
 
+## Fabric.js 分层编辑器
+
+项目工作台在主商品图和 StyleSpec revision 就绪后加载 Fabric.js 编辑器。持久化格式是严格校验的 `DesignDocument V1`，不是任意 Fabric JSON；画布和业务文档通过受控适配器双向转换。文档固定为 1080 × 1080，保存画布背景色、StyleSpec revision，以及每个图层的稳定 ID、类型、zIndex、可见/锁定状态、位置、缩放、旋转和透明度。
+
+当前支持四类图层：
+
+- `PRODUCT`：必须且只能有一个，只能引用当前项目上传的 `PRODUCT` Asset；
+- `AI_BACKGROUND`：最多一个，只能引用当前项目的 `GENERATED_BACKGROUND` Asset，并始终处于最底层；
+- `TEXT`：保存纯文本、字体、字号、颜色、对齐和位置；
+- `DECORATION`：支持矩形、圆形和受控颜色/描边属性。
+
+画布支持鼠标移动、缩放、旋转以及图层删除、锁定、显隐和排序；商品主图层受不变量保护，不能删除。文字可在画布中双击编辑，也可在属性面板修改内容、字号、字体、颜色、对齐和坐标。撤销/重做只保留当前页面会话。切换已有生成背景时，只替换背景资产引用，商品、文字和装饰图层保持不变。编辑器可校验并加载 DesignDocument JSON，也可下载当前 JSON。
+
+版本保存端点：
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| `POST` | `/api/projects/:projectId/versions` | 校验 owner、revision、资产类型和完整文档后保存不可变快照 |
+
+保存结果包含递增 `versionNumber`、画布尺寸、StyleSpec revision 和完整 layer state。T-05 不提供版本列表、恢复或刷新后恢复；这些属于 T-06。
+
 ## 数据库迁移与恢复
 
 ```powershell
@@ -121,7 +143,7 @@ npm run db:migrate:check
 
 `db:migrate:check` 连续执行两次 forward-only migration，用于验证空库初始化和重复执行的非破坏性。已应用迁移不得修改；后续 schema 变更必须新增迁移。
 
-T-02 迁移把 Asset 的 `width`/`height` 设为必填。T-03 迁移补齐 Job 的输入快照、最大尝试次数、租约时间、Provider 名称/请求 ID 和完成时间，并保留现有 Job 数据。T-04 迁移为 GenerationResult 补齐 Provider、请求、耗时、用量和成本元数据。通过正式 T-02 上传创建的记录总会写入真实解码尺寸；若本地曾手工插入空尺寸测试记录，迁移前必须删除该测试记录或补录经过核验的尺寸。
+T-02 迁移把 Asset 的 `width`/`height` 设为必填。T-03 迁移补齐 Job 的输入快照、最大尝试次数、租约时间、Provider 名称/请求 ID 和完成时间，并保留现有 Job 数据。T-04 迁移为 GenerationResult 补齐 Provider、请求、耗时、用量和成本元数据。T-05 将 DesignVersion 的初始 `designJson` 列向前重命名为 `documentJson`，并补齐画布宽高。通过正式 T-02 上传创建的记录总会写入真实解码尺寸；若本地曾手工插入空尺寸测试记录，迁移前必须删除该测试记录或补录经过核验的尺寸。
 
 - 可丢弃的本地数据库：删除并重建本地数据库，然后执行 `npm run db:migrate`；
 - 不可丢弃环境：先停止写入并从已验证备份恢复，再根据迁移记录决定是否重新执行 deploy；
@@ -149,16 +171,16 @@ T-02 迁移把 Asset 的 `width`/`height` 设为必填。T-03 迁移补齐 Job �
 ```text
 app/             页面与 Route Handler
 src/config/      服务端环境配置
-src/domain/      项目、上传、StyleSpec 和生成结果运行时校验
-src/services/    owner-scoped 项目、资产、任务和 revision 服务
+src/domain/      项目、上传、StyleSpec、生成结果和版本请求校验
+src/services/    owner-scoped 项目、资产、任务、revision 和版本服务
 src/providers/   Style Analyzer/Image Generation 适配器与确定性 Mock
 src/storage/     PostgreSQL/S3 访问、owner 查询和补偿边界
-src/editor/      编辑器文档与行为（后续任务）
+src/editor/      DesignDocument Schema、Fabric 双向适配和会话历史
 worker/          PostgreSQL 原子领取、StyleSpec 分析和图片生成执行单元
 prisma/          Prisma schema 与 forward-only migrations
 tests/           unit / integration / e2e
 ```
 
-## T-04 范围说明
+## T-05 范围说明
 
-T-04 只增加 Image Generation Provider Adapter、统一错误、五种 Mock 场景、生成 Job Worker、结果持久化和只读结果 API。没有配置生产 API Key、绑定单一模型、接入真实 AI 供应商、开发完整图片生成页面、Fabric.js 编辑器或批量生成。本阶段是可测试的工程适配层，不是完整业务 MVP。
+T-05 只增加 Fabric.js 分层编辑、DesignDocument V1、会话撤销/重做、已有背景切换和不可变版本保存端点。没有增加 AI 生成调用、真实模型 API、自动设计、版本列表/恢复、PNG 导出、多人协作或 Photoshop 级功能。本阶段仍不是完整业务 MVP。
