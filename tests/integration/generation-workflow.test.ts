@@ -151,7 +151,10 @@ describe("T-04 image generation workflow", () => {
     expect(generations[0]).toMatchObject({
       jobId: created.id,
       styleSpecRevisionId,
+      status: "SUCCEEDED",
+      resultUrl: `/api/projects/${projectId}/generations/${generations[0]!.id}/preview`,
       providerName: "mock",
+      providerRequestId: expect.any(String),
       requestId,
       durationMs: expect.any(Number),
       usage: {
@@ -167,6 +170,7 @@ describe("T-04 image generation workflow", () => {
         mimeType: "image/png",
         width: 1080,
         height: 1080,
+        previewUrl: `/api/projects/${projectId}/generations/${generations[0]!.id}/preview`,
       },
     });
     expect(storage.objects.size).toBe(1);
