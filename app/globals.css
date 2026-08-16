@@ -52,6 +52,12 @@ a {
   margin-top: 26px;
 }
 
+.workspace-shortcuts {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 .eyebrow {
   margin: 0 0 8px;
   color: #5269e7;
@@ -912,6 +918,11 @@ textarea:focus {
   .analysis-actions {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .workspace-shortcuts {
+    align-items: flex-start;
+    flex-direction: column-reverse;
   }
 
   .two-column {
