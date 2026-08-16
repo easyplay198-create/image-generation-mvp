@@ -41,6 +41,7 @@ export type GenerationResultView = {
   };
   asset: {
     id: string;
+    sourceAssetId: string | null;
     width: number;
     height: number;
     previewUrl: string;

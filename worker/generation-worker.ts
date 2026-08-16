@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 
 import type { Job } from "@/src/generated/prisma/client";
@@ -96,12 +96,32 @@ export class GenerationWorker {
       }
 
       const providerStartedAt = Date.now();
+      const productReference = input.generationContext.productReference
+        ? await this.loadProductReference({
+            ownerId: job.ownerId,
+            projectId: job.projectId,
+            reference: input.generationContext.productReference,
+            kind: AssetKind.PRODUCT,
+          })
+        : undefined;
+      const visualReferences = await Promise.all(
+        input.generationContext.visualReferences.map((reference) =>
+          this.loadProductReference({
+            ownerId: job.ownerId,
+            projectId: job.projectId,
+            reference,
+            kind: AssetKind.REFERENCE,
+          }),
+        ),
+      );
       const submission: unknown = await this.provider.generateBackground({
         projectId: job.projectId,
         styleSpec,
         productContext: input.productContext,
-        canvas: input.canvas,
+        canvas: input.generationContext.canvas,
         idempotencyKey: input.idempotencyKey,
+        productReference,
+        visualReferences,
       });
       providerRequestId =
         typeof submission === "object" &&
@@ -127,7 +147,7 @@ export class GenerationWorker {
       const providerDurationMs = Date.now() - providerStartedAt;
       const image = await validateGeneratedBackground(
         status.image,
-        input.canvas,
+        input.generationContext.canvas,
         providerRequestId,
       );
       const usage = validateNormalizedGenerationUsage(
@@ -141,6 +161,8 @@ export class GenerationWorker {
         providerRequestId,
         providerDurationMs,
         styleSpecRevisionId: input.styleSpecRevisionId,
+        productReferenceAssetId:
+          input.generationContext.productReference?.assetId,
         image,
         usage,
       });
@@ -165,6 +187,9 @@ export class GenerationWorker {
         result: status === JobStatus.QUEUED ? "retrying" : "failed",
         errorCode: failure.code,
         failureSource: failure.source,
+        ...(failure.code === "INTERNAL_ERROR"
+          ? { originalError: describeUnexpectedError(error) }
+          : {}),
       });
     }
 
@@ -309,6 +334,7 @@ export class GenerationWorker {
     providerRequestId: string;
     providerDurationMs: number;
     styleSpecRevisionId: string;
+    productReferenceAssetId?: string;
     image: ValidatedGeneratedBackground;
     usage: NormalizedGenerationUsage;
   }): Promise<void> {
@@ -321,7 +347,9 @@ export class GenerationWorker {
         contentType: input.image.mimeType,
         metadata: {
           sha256: input.image.sha256,
-          kind: "generated-background",
+          kind: input.productReferenceAssetId
+            ? "product-main-candidate"
+            : "generated-background",
           jobId: input.job.id,
         },
       });
@@ -369,6 +397,7 @@ export class GenerationWorker {
             width: input.image.width,
             height: input.image.height,
             sha256: input.image.sha256,
+            sourceAssetId: input.productReferenceAssetId,
           },
         });
         await transaction.generationResult.create({
@@ -428,6 +457,73 @@ export class GenerationWorker {
         input.providerRequestId,
       );
     }
+  }
+
+  private async loadProductReference(input: {
+    ownerId: string;
+    projectId: string;
+    kind: typeof AssetKind.PRODUCT | typeof AssetKind.REFERENCE;
+    reference: {
+      assetId: string;
+      mimeType: string;
+      width: number;
+      height: number;
+      byteSize: number;
+      sha256: string;
+    };
+  }) {
+    const asset = await this.database.asset.findFirst({
+      where: {
+        id: input.reference.assetId,
+        ownerId: input.ownerId,
+        projectId: input.projectId,
+        kind: input.kind,
+      },
+    });
+    if (
+      !asset ||
+      asset.mimeType !== input.reference.mimeType ||
+      asset.width !== input.reference.width ||
+      asset.height !== input.reference.height ||
+      Number(asset.byteSize) !== input.reference.byteSize ||
+      asset.sha256 !== input.reference.sha256
+    ) {
+      throw workerFailure(
+        "PROVIDER_INVALID_RESPONSE",
+        "Generation Context 图片快照无效或资产已发生变化。",
+        "validation",
+      );
+    }
+
+    let object: Awaited<ReturnType<ObjectStorage["getObject"]>>;
+    try {
+      object = await this.storage.getObject(asset.objectKey);
+    } catch {
+      throw workerFailure(
+        "STORAGE_FAILED",
+        "读取 Generation Context 图片失败。",
+        "storage",
+      );
+    }
+    if (
+      object.contentType.toLowerCase() !== asset.mimeType.toLowerCase() ||
+      object.body.byteLength !== Number(asset.byteSize) ||
+      createHash("sha256").update(object.body).digest("hex") !== asset.sha256
+    ) {
+      throw workerFailure(
+        "STORAGE_FAILED",
+        "Generation Context 图片对象与资产记录不一致。",
+        "storage",
+      );
+    }
+
+    return {
+      assetId: asset.id,
+      body: object.body,
+      mimeType: asset.mimeType,
+      width: asset.width,
+      height: asset.height,
+    };
   }
 
   private async failOrRetry(
@@ -511,6 +607,7 @@ function logWorkerResult(input: {
   result: "succeeded" | "retrying" | "failed";
   errorCode?: string;
   failureSource?: WorkerFailure["source"];
+  originalError?: { name: string; message: string };
 }) {
   console.info(
     JSON.stringify({
@@ -528,6 +625,20 @@ function logWorkerResult(input: {
       providerRequestId: input.providerRequestId,
       errorCode: input.errorCode,
       failureSource: input.failureSource,
+      originalError: input.originalError,
     }),
   );
+}
+
+function describeUnexpectedError(error: unknown): {
+  name: string;
+  message: string;
+} {
+  if (error instanceof Error) {
+    return {
+      name: error.name.slice(0, 120),
+      message: error.message.slice(0, 500),
+    };
+  }
+  return { name: "UnknownThrownValue", message: String(error).slice(0, 500) };
 }

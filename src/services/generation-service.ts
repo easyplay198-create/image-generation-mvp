@@ -14,6 +14,7 @@ import { toJobDto, type JobDto } from "@/src/services/job-service";
 import type { DatabaseClient } from "@/src/storage/database";
 import { withTransaction } from "@/src/storage/database";
 import type { ObjectStorage } from "@/src/storage/object-storage";
+import { GenerationContextAdapter } from "@/src/vision/generation-context/generation-context-adapter";
 
 export type GenerationResultDto = {
   id: string;
@@ -38,6 +39,7 @@ export type GenerationResultDto = {
   };
   asset: {
     id: string;
+    sourceAssetId: string | null;
     mimeType: string;
     byteSize: number;
     width: number;
@@ -121,6 +123,31 @@ export class GenerationService {
       }
       assertStoredStyleSpec(revision.specJson);
 
+      let effectiveStyleSpecRevisionId = revision.id;
+      let effectiveStyleSpecRevisionNumber = revision.revisionNumber;
+      if (input.request.generationContext) {
+        const generationContext = new GenerationContextAdapter().adapt(
+          input.request.generationContext,
+        );
+        const latestRevision =
+          await transaction.styleSpecRevision.findFirst({
+            where: { ownerId: input.ownerId, projectId: input.projectId },
+            orderBy: { revisionNumber: "desc" },
+            select: { revisionNumber: true },
+          });
+        const contextRevision = await transaction.styleSpecRevision.create({
+          data: {
+            ownerId: input.ownerId,
+            projectId: input.projectId,
+            revisionNumber: (latestRevision?.revisionNumber ?? 0) + 1,
+            schemaVersion: generationContext.styleSpec.schemaVersion,
+            specJson: generationContext.styleSpec,
+          },
+        });
+        effectiveStyleSpecRevisionId = contextRevision.id;
+        effectiveStyleSpecRevisionNumber = contextRevision.revisionNumber;
+      }
+
       const project = await transaction.project.findFirst({
         where: { id: input.projectId, ownerId: input.ownerId },
         select: {
@@ -133,6 +160,82 @@ export class GenerationService {
       });
       if (!project) throw projectNotFound();
 
+      let productReference:
+        | {
+            id: string;
+            mimeType: string;
+            width: number;
+            height: number;
+            byteSize: bigint;
+            sha256: string;
+          }
+        | undefined;
+      let visualReferences: Array<NonNullable<typeof productReference>> = [];
+      if (input.providerName === "qwen") {
+        productReference =
+          (await transaction.asset.findFirst({
+            where: {
+              ownerId: input.ownerId,
+              projectId: input.projectId,
+              kind: AssetKind.PRODUCT,
+            },
+            select: {
+              id: true,
+              mimeType: true,
+              width: true,
+              height: true,
+              byteSize: true,
+              sha256: true,
+            },
+          })) ?? undefined;
+        if (!productReference) {
+          throw new ApiError(
+            "PRODUCT_ASSET_REQUIRED",
+            409,
+            "使用 Qwen 生成商品主图前必须先上传唯一的商品参考图。",
+          );
+        }
+
+        const storedVisualReferences = await transaction.asset.findMany({
+          where: {
+            ownerId: input.ownerId,
+            projectId: input.projectId,
+            kind: AssetKind.REFERENCE,
+          },
+          orderBy: { createdAt: "asc" },
+          select: {
+            id: true,
+            mimeType: true,
+            width: true,
+            height: true,
+            byteSize: true,
+            sha256: true,
+          },
+        });
+        const distinctSha256 = new Set([productReference.sha256]);
+        visualReferences = storedVisualReferences.filter((asset) => {
+          if (distinctSha256.has(asset.sha256)) return false;
+          distinctSha256.add(asset.sha256);
+          return true;
+        }).slice(0, 2);
+        if (visualReferences.length === 0) {
+          throw new ApiError(
+            "REFERENCE_ASSET_REQUIRED",
+            409,
+            "使用 Qwen 生成商品主图前必须至少有一张与商品图不同的视觉参考图。",
+          );
+        }
+      }
+
+      const toAssetSnapshot = (asset: NonNullable<typeof productReference>) => ({
+        assetId: asset.id,
+        mimeType: asset.mimeType,
+        width: asset.width,
+        height: asset.height,
+        byteSize: Number(asset.byteSize),
+        sha256: asset.sha256,
+      });
+
       const job = await transaction.job.create({
         data: {
           ownerId: input.ownerId,
@@ -140,14 +243,22 @@ export class GenerationService {
           type: JobType.IMAGE_GENERATION,
           status: JobStatus.QUEUED,
           idempotencyKey: input.request.idempotencyKey,
-          styleSpecRevisionId: revision.id,
+          styleSpecRevisionId: effectiveStyleSpecRevisionId,
           inputJson: {
-            schemaVersion: "1.0",
+            schemaVersion: "1.1",
             requestId: input.requestId,
             idempotencyKey: input.request.idempotencyKey,
-            styleSpecRevisionId: revision.id,
+            styleSpecRevisionId: effectiveStyleSpecRevisionId,
             productContext: project,
-            canvas: { width: 1080, height: 1080 },
+            generationContext: {
+              schemaVersion: "1.0",
+              styleSpecRevisionNumber: effectiveStyleSpecRevisionNumber,
+              ...(productReference
+                ? { productReference: toAssetSnapshot(productReference) }
+                : {}),
+              visualReferences: visualReferences.map(toAssetSnapshot),
+              canvas: { width: 800, height: 800 },
+            },
           },
           providerName: input.providerName,
           maxAttempts: 2,
@@ -245,6 +356,7 @@ export function toGenerationResultDto(
     costMetadata: normalized.costMetadata,
     asset: {
       id: result.asset.id,
+      sourceAssetId: result.asset.sourceAssetId,
       mimeType: result.asset.mimeType,
       byteSize: Number(result.asset.byteSize),
       width: result.asset.width,

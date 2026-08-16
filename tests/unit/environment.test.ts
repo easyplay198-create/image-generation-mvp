@@ -21,6 +21,22 @@ describe("server environment validation", () => {
     expect(() => assertServerEnvironment(validEnvironment)).not.toThrow();
   });
 
+  it("requires a Qwen key only when the real image provider is selected", () => {
+    expect(
+      getMissingEnvironmentVariables({
+        ...validEnvironment,
+        IMAGE_GENERATION_PROVIDER: "qwen",
+      }),
+    ).toEqual(["QWEN_API_KEY"]);
+    expect(() =>
+      assertServerEnvironment({
+        ...validEnvironment,
+        IMAGE_GENERATION_PROVIDER: "qwen",
+        QWEN_API_KEY: "server-side-test-key",
+      }),
+    ).not.toThrow();
+  });
+
   it("names missing variables without exposing configured values", () => {
     const environment = { ...validEnvironment, DATABASE_URL: "" };
 

@@ -6,6 +6,12 @@ export type GeneratedImagePayload = {
   mimeType: string;
 };
 
+export type ProductReferenceImage = GeneratedImagePayload & {
+  assetId: string;
+  width: number;
+  height: number;
+};
+
 export type ImageGenerationSubmission = {
   providerRequestId: string;
 };
@@ -38,6 +44,8 @@ export interface ImageGenerationProvider {
     productContext: ProductInfo;
     canvas: { width: number; height: number };
     idempotencyKey: string;
+    productReference?: ProductReferenceImage;
+    visualReferences?: ProductReferenceImage[];
   }): Promise<ImageGenerationSubmission>;
 
   getJobStatus(input: {

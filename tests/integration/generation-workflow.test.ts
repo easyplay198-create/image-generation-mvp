@@ -159,7 +159,7 @@ describe("T-04 image generation workflow", () => {
       durationMs: expect.any(Number),
       usage: {
         generatedImages: 1,
-        outputPixels: 1080 * 1080,
+        outputPixels: 800 * 800,
       },
       costMetadata: {
         amount: "0.0000",
@@ -168,8 +168,8 @@ describe("T-04 image generation workflow", () => {
       },
       asset: {
         mimeType: "image/png",
-        width: 1080,
-        height: 1080,
+        width: 800,
+        height: 800,
         previewUrl: `/api/projects/${projectId}/generations/${generations[0]!.id}/preview`,
       },
     });
