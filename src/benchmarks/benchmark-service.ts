@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { AssetKind, BenchmarkVariant } from "@/src/generated/prisma/client";
 
 import type {
@@ -81,8 +83,9 @@ export class BenchmarkService {
           "Benchmark 必须明确使用 StyleSpec revision 2。",
         );
       }
+      let styleSpec;
       try {
-        parseStyleSpecV1(revision.specJson);
+        styleSpec = parseStyleSpecV1(revision.specJson);
       } catch (error) {
         if (error instanceof StyleSpecValidationError) {
           throw new ApiError(
@@ -105,7 +108,7 @@ export class BenchmarkService {
         throw new ApiError(
           "PRODUCT_ASSET_REQUIRED",
           409,
-          "Benchmark 必须绑定当前 SKU 的商品图。",
+          "Benchmark 必须绑定当前项目的商品图。",
         );
       }
       const references = await transaction.asset.findMany({
@@ -139,11 +142,38 @@ export class BenchmarkService {
         visualReferences: referenceSnapshots,
         canvas: { width: OUTPUT_SIZE as 800, height: OUTPUT_SIZE as 800 },
       };
+      const experimentFingerprint = createExperimentFingerprint({
+        fingerprintVersion: "2.0",
+        experimentProtocol: "OBSERVATIONAL_NON_CAUSAL_SAMPLE_COMPARISON",
+        variants: ["PLAIN_PROMPT", "STYLE_SPEC"],
+        projectId: input.projectId,
+        providerName: input.providerName,
+        modelName: input.modelName,
+        output: { width: OUTPUT_SIZE, height: OUTPUT_SIZE },
+        plainPrompt: input.request.plainPrompt,
+        productContext: project,
+        productReference,
+        visualReferences: referenceSnapshots,
+        styleSpecRevisionId: revision.id,
+        styleSpecRevisionNumber: revision.revisionNumber,
+        styleSpec,
+        generationContext,
+      });
+      const existingExperiment = await transaction.benchmarkRun.findFirst({
+        where: {
+          projectId: input.projectId,
+          experimentFingerprint,
+        },
+        select: { id: true },
+      });
+      if (existingExperiment) return existingExperiment.id;
+
       const run = await transaction.benchmarkRun.create({
         data: {
           ownerId: input.ownerId,
           projectId: input.projectId,
           idempotencyKey: input.request.idempotencyKey,
+          experimentFingerprint,
           sku: project.productName,
           providerName: input.providerName,
           modelName: input.modelName,
@@ -206,7 +236,11 @@ export class BenchmarkService {
     return this.getRun(input.ownerId, input.projectId, runId);
   }
 
-  async listRuns(ownerId: string, projectId: string) {
+  async listRuns(
+    ownerId: string,
+    projectId: string,
+    input: { limit: number; cursor?: string },
+  ) {
     await this.assertProject(ownerId, projectId);
     const runs = await this.database.benchmarkRun.findMany({
       where: { ownerId, projectId },
@@ -216,9 +250,18 @@ export class BenchmarkService {
           orderBy: { variant: "asc" },
         },
       },
-      orderBy: { createdAt: "desc" },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: input.limit + 1,
+      ...(input.cursor
+        ? { cursor: { id: input.cursor }, skip: 1 }
+        : {}),
     });
-    return runs.map(toRunDto);
+    const hasMore = runs.length > input.limit;
+    const page = hasMore ? runs.slice(0, input.limit) : runs;
+    return {
+      benchmarks: page.map(toRunDto),
+      nextCursor: hasMore ? page.at(-1)?.id ?? null : null,
+    };
   }
 
   async getRun(ownerId: string, projectId: string, runId: string) {
@@ -331,6 +374,7 @@ function toRunDto(run: NonNullable<RunWithJobs>) {
     outputHeight: run.outputHeight,
     productAssetId: run.productAssetId,
     referenceAssetIds: run.referenceAssetIds,
+    experimentProtocol: "OBSERVATIONAL_NON_CAUSAL_SAMPLE_COMPARISON" as const,
     styleSpecRevisionId: run.styleSpecRevisionId,
     generationContext: run.generationContextJson,
     createdAt: run.createdAt.toISOString(),
@@ -351,7 +395,7 @@ function toRunDto(run: NonNullable<RunWithJobs>) {
         providerName: job.providerName,
         providerRequestId: job.providerRequestId,
         errorCode: job.errorCode,
-        errorMessage: job.errorMessage,
+        errorMessage: toPublicBenchmarkError(job.errorCode),
         startedAt: job.startedAt?.toISOString() ?? null,
         finishedAt: job.finishedAt?.toISOString() ?? null,
         createdAt: job.createdAt.toISOString(),
@@ -384,6 +428,48 @@ function toRunDto(run: NonNullable<RunWithJobs>) {
       };
     }),
   };
+}
+
+export function createExperimentFingerprint(input: unknown): string {
+  return createHash("sha256")
+    .update(stableCanonicalSerialize(input))
+    .digest("hex");
+}
+
+export function stableCanonicalSerialize(input: unknown): string {
+  const serialized = JSON.stringify(toCanonicalJson(input));
+  if (serialized === undefined) {
+    throw new TypeError("Benchmark fingerprint input must be JSON-serializable.");
+  }
+  return serialized;
+}
+
+function toCanonicalJson(input: unknown): unknown {
+  if (Array.isArray(input)) return input.map(toCanonicalJson);
+  if (input === null || typeof input !== "object") return input;
+
+  return Object.fromEntries(
+    Object.entries(input as Record<string, unknown>)
+      .filter(([, value]) => value !== undefined)
+      .sort(([left], [right]) =>
+        left < right ? -1 : left > right ? 1 : 0,
+      )
+      .map(([key, value]) => [key, toCanonicalJson(value)]),
+  );
+}
+
+function toPublicBenchmarkError(errorCode: string | null): string | null {
+  if (!errorCode) return null;
+  if (errorCode === "PROVIDER_SUBMISSION_AMBIGUOUS") {
+    return "Provider 提交结果不明确；为避免重复计费，未自动重试。";
+  }
+  if (errorCode.startsWith("PROVIDER_")) {
+    return "图片生成服务未完成该组样本。";
+  }
+  if (errorCode === "STORAGE_COMPENSATION_FAILED") {
+    return "结果保存失败；补偿清理需要人工核查。";
+  }
+  return "Benchmark 任务未完成，请联系管理员并提供 Job ID。";
 }
 
 function projectNotFound() {

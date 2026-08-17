@@ -18,11 +18,27 @@ const normalizedUsageSchema = z
     outputPixels: z.number().int().positive(),
     costMetadata: z
       .object({
-        amount: z.string().regex(/^\d+(?:\.\d{1,6})?$/),
-        currency: z.string().regex(/^[A-Z]{3}$/),
-        estimated: z.boolean(),
+        status: z.literal("UNKNOWN"),
+        amount: z.null(),
+        currency: z.null(),
+        estimated: z.literal(false),
+        reason: z.enum(["PRICING_NOT_VERIFIED", "LEGACY_UNVERIFIED_COST"]),
       })
-      .strict(),
+      .strict()
+      .or(
+        z
+          .object({
+            status: z.literal("ESTIMATED"),
+            amount: z.string().regex(/^\d+(?:\.\d{1,6})?$/),
+            currency: z.string().regex(/^[A-Z]{3}$/),
+            estimated: z.literal(true),
+            model: z.string().min(1).max(120),
+            region: z.string().min(1).max(120),
+            pricingVersion: z.string().min(1).max(120),
+            source: z.string().url().max(500),
+          })
+          .strict(),
+      ),
   })
   .strict();
 
@@ -125,9 +141,31 @@ export function parseStoredGenerationUsage(
       ? usageJson
       : {};
 
+  const costMetadata = isLegacyCostMetadata(costMetadataJson)
+    ? {
+        status: "UNKNOWN" as const,
+        amount: null,
+        currency: null,
+        estimated: false as const,
+        reason: "LEGACY_UNVERIFIED_COST" as const,
+      }
+    : costMetadataJson;
+
   return validateNormalizedGenerationUsage(
-    { ...usageRecord, costMetadata: costMetadataJson },
+    { ...usageRecord, costMetadata },
     providerRequestId,
+  );
+}
+
+function isLegacyCostMetadata(value: unknown): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    !("status" in value) &&
+    "amount" in value &&
+    "currency" in value &&
+    "estimated" in value
   );
 }
 

@@ -37,7 +37,13 @@ describe("PlainPromptQwenProvider", () => {
 
     const result = await provider.generate({
       prompt: "普通电商主图 Prompt，不使用任何 StyleSpec 或 Reference Image。",
-      productReference: { body: product, mimeType: "image/png" },
+      productReference: {
+        assetId: "product-asset",
+        body: product,
+        mimeType: "image/png",
+        width: 500,
+        height: 700,
+      },
       canvas: { width: 800, height: 800 },
     });
 

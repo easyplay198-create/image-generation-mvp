@@ -3,11 +3,15 @@
 import Image from "next/image";
 import { useCallback, useEffect, useState } from "react";
 
+import { formatGenerationCost } from "@/src/domain/generation-flow";
+import type { GenerationCostMetadata } from "@/src/providers/image-generation-provider";
+import type { BenchmarkRuntimeCapability } from "@/src/vision/runtime-capability";
+
 type BenchmarkResult = {
   id: string;
   providerRequestId: string;
   durationMs: number;
-  costMetadata: { amount: string; currency: string; estimated: boolean };
+  costMetadata: GenerationCostMetadata;
   createdAt: string;
   resultUrl: string;
   asset: {
@@ -51,6 +55,7 @@ type BenchmarkRun = {
   referenceAssetIds: string[];
   styleSpecRevisionId: string;
   generationContext: unknown;
+  experimentProtocol: "OBSERVATIONAL_NON_CAUSAL_SAMPLE_COMPARISON";
   createdAt: string;
   jobs: BenchmarkJob[];
 };
@@ -58,12 +63,20 @@ type BenchmarkRun = {
 const DEFAULT_PROMPT =
   "基于输入的商品图生成一张简洁、专业的俄罗斯电商平台商品主图。完整保留商品外观、颜色、结构、屏幕与按钮，移除原背景和手，只展示一个商品主体。使用干净的浅色棚拍背景、自然接触阴影和适度留白，不添加文字、价格、促销标、品牌、商标、水印、人物或额外配件。输出 800×800 像素。";
 
+export function canCreateBenchmark(
+  runtimeCapability: BenchmarkRuntimeCapability,
+): boolean {
+  return runtimeCapability === "AVAILABLE";
+}
+
 export default function BenchmarkPanel({
   projectId,
   revision,
+  runtimeCapability,
 }: {
   projectId: string;
   revision: { id: string; revisionNumber: number } | null;
+  runtimeCapability: BenchmarkRuntimeCapability;
 }) {
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
   const [runs, setRuns] = useState<BenchmarkRun[]>([]);
@@ -141,6 +154,10 @@ export default function BenchmarkPanel({
   }, [activeRunId, projectId]);
 
   async function createRun() {
+    if (!canCreateBenchmark(runtimeCapability)) {
+      setStatus("Qwen Benchmark 当前不可用：服务器配置未就绪。");
+      return;
+    }
     if (!revision || revision.revisionNumber !== 2) {
       setStatus("必须明确选择 StyleSpec revision 2 才能创建 Benchmark。");
       return;
@@ -159,7 +176,7 @@ export default function BenchmarkPanel({
       });
       const { benchmark } = await readApiResponse<{ benchmark: BenchmarkRun }>(response);
       setRuns((current) => [benchmark, ...current]);
-      setStatus("Benchmark Run 已创建；启动 benchmark worker 后将顺序生成 A/B 两组。 ");
+      setStatus("非因果样本对比 Run 已创建；启动 benchmark worker 后将生成两组观察样本。");
     } catch (error) {
       setStatus(getErrorMessage(error));
     } finally {
@@ -171,16 +188,21 @@ export default function BenchmarkPanel({
     <section className="panel benchmark-panel">
       <div className="section-heading">
         <div>
-          <p className="eyebrow">生成对照实验</p>
-          <h2>普通 Prompt vs StyleSpec</h2>
+          <p className="eyebrow">非因果生成样本对比</p>
+          <h2>普通 Prompt 与 StyleSpec 样本</h2>
           <p className="summary">
-            只生成可比较证据，不对结果优劣做判断。A/B 固定同一 SKU、Qwen 模型和 800×800。
+            单样本且两组输入变量不同；结果仅供并排观察，不支持把差异归因于 StyleSpec。
           </p>
         </div>
         <span className="count-badge">{runs.length} Runs</span>
       </div>
 
       <div className="benchmark-create">
+        {!canCreateBenchmark(runtimeCapability) && (
+          <p className="status" role="status">
+            Qwen Benchmark 当前不可用：服务器配置未就绪。
+          </p>
+        )}
         <label>
           <span>A 组普通电商主图 Prompt</span>
           <textarea
@@ -197,10 +219,15 @@ export default function BenchmarkPanel({
         <button
           type="button"
           className="primary-button"
-          disabled={busy || Boolean(activeRunId) || revision?.revisionNumber !== 2}
+          disabled={
+            !canCreateBenchmark(runtimeCapability) ||
+            busy ||
+            Boolean(activeRunId) ||
+            revision?.revisionNumber !== 2
+          }
           onClick={() => void createRun()}
         >
-          {busy ? "正在创建…" : activeRunId ? "实验处理中…" : "创建 A/B 对照实验"}
+          {busy ? "正在创建…" : activeRunId ? "样本生成中…" : "创建非因果样本对比"}
         </button>
       </div>
 
@@ -215,7 +242,7 @@ export default function BenchmarkPanel({
                 <small>{formatDate(run.createdAt)}</small>
               </div>
               <div className="benchmark-invariants">
-                <span>SKU：{run.sku}</span>
+                <span>商品：{run.sku}</span>
                 <span>{run.providerName} / {run.modelName}</span>
                 <span>{run.outputWidth} × {run.outputHeight}</span>
               </div>
@@ -286,8 +313,7 @@ function BenchmarkCard({ job, run }: { job: BenchmarkJob | null; run: BenchmarkR
 
 function formatCost(result: BenchmarkResult | null | undefined) {
   if (!result) return "—";
-  const cost = result.costMetadata;
-  return `${cost.amount} ${cost.currency}${cost.estimated ? "（估算）" : ""}`;
+  return formatGenerationCost(result.costMetadata);
 }
 
 async function readApiResponse<T>(response: Response): Promise<T> {

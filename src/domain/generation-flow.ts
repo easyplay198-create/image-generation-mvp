@@ -1,3 +1,5 @@
+import type { GenerationCostMetadata } from "@/src/providers/image-generation-provider";
+
 export const GENERATION_JOB_ACTIVE_STATUSES = ["QUEUED", "RUNNING"] as const;
 export const GENERATION_JOB_TERMINAL_STATUSES = [
   "SUCCEEDED",
@@ -34,11 +36,7 @@ export type GenerationResultView = {
   providerRequestId: string;
   requestId: string;
   durationMs: number;
-  costMetadata: {
-    amount: string;
-    currency: string;
-    estimated: boolean;
-  };
+  costMetadata: GenerationCostMetadata;
   asset: {
     id: string;
     sourceAssetId: string | null;
@@ -48,6 +46,15 @@ export type GenerationResultView = {
   };
   createdAt: string;
 };
+
+export function formatGenerationCost(cost: GenerationCostMetadata): string {
+  if (cost.status === "ESTIMATED") {
+    return `${cost.amount} ${cost.currency}${cost.estimated ? "（估算）" : ""}`;
+  }
+  return cost.reason === "LEGACY_UNVERIFIED_COST"
+    ? "历史零值记录，定价未核验"
+    : "成本未知";
+}
 
 export function isGenerationJobActive(
   job: Pick<GenerationJobView, "status"> | null | undefined,

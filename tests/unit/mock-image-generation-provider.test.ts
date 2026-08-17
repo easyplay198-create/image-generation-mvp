@@ -46,9 +46,11 @@ describe("Mock ImageGenerationProvider", () => {
       inputUnits: 203,
       outputPixels: 1080 * 1080,
       costMetadata: {
-        amount: "0.0000",
-        currency: "USD",
-        estimated: true,
+        status: "UNKNOWN",
+        amount: null,
+        currency: null,
+        estimated: false,
+        reason: "PRICING_NOT_VERIFIED",
       },
     });
     await expect(

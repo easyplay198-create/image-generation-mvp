@@ -7,16 +7,21 @@ import type {
   NormalizedGenerationUsage,
 } from "@/src/providers/image-generation-provider";
 import { ProviderAdapterError } from "@/src/providers/provider-error";
+import {
+  normalizeQwenInputImage,
+  QWEN_MAX_DOWNLOAD_BYTES,
+  readLimitedImageResponseBody,
+} from "@/src/providers/qwen-image-boundaries";
+import {
+  compileQwenNegativePrompt,
+  compileQwenPrompt,
+} from "@/src/providers/qwen-prompt";
 
 export const DEFAULT_QWEN_ENDPOINT =
   "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
 export const DEFAULT_QWEN_MODEL = "qwen-image-2.0";
 export const DEFAULT_QWEN_TIMEOUT_MS = 180_000;
 
-const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
-const MAX_REFERENCE_IMAGE_BYTES = 10 * 1024 * 1024;
-const MIN_REFERENCE_IMAGE_DIMENSION = 384;
-const MAX_REFERENCE_IMAGE_DIMENSION = 3_072;
 const MAX_COMPLETED_RESULTS = 4;
 const COMPLETED_RESULT_TTL_MS = 10 * 60 * 1_000;
 const QWEN_GENERATION_PATH =
@@ -141,10 +146,15 @@ export class QwenImageGenerationProvider
             this.model,
             input,
             input.productReference
-              ? await prepareProductReference(input.productReference)
+              ? await normalizeQwenInputImage(
+                  input.productReference,
+                  "Qwen 商品参考图",
+                )
               : undefined,
             await Promise.all(
-              (input.visualReferences ?? []).map(prepareProductReference),
+              (input.visualReferences ?? []).map((reference) =>
+                normalizeQwenInputImage(reference, "Qwen 视觉参考图"),
+              ),
             ),
           ),
         ),
@@ -162,7 +172,11 @@ export class QwenImageGenerationProvider
 
       const parsed = qwenSuccessResponseSchema.safeParse(responseBody);
       if (!parsed.success) {
-        throw invalidResponse(null, "Qwen Provider 返回了无效生成响应。");
+        throw invalidResponse(
+          null,
+          "Qwen Provider 返回了无效生成响应。",
+          "MAY_HAVE_BEEN_ACCEPTED",
+        );
       }
 
       providerRequestId = parsed.data.request_id;
@@ -208,6 +222,7 @@ export class QwenImageGenerationProvider
           true,
           "Qwen Provider 请求超时。",
           providerRequestId,
+          "MAY_HAVE_BEEN_ACCEPTED",
         );
       }
       throw new ProviderAdapterError(
@@ -215,6 +230,7 @@ export class QwenImageGenerationProvider
         true,
         "Qwen Provider 网络请求失败。",
         providerRequestId,
+        "MAY_HAVE_BEEN_ACCEPTED",
       );
     }
   }
@@ -246,9 +262,11 @@ export class QwenImageGenerationProvider
       outputPixels:
         parsed.data.generatedImages * parsed.data.width * parsed.data.height,
       costMetadata: {
-        amount: "0.0000",
-        currency: "CNY",
-        estimated: true,
+        status: "UNKNOWN",
+        amount: null,
+        currency: null,
+        estimated: false,
+        reason: "PRICING_NOT_VERIFIED",
       },
     };
   }
@@ -295,12 +313,16 @@ export class QwenImageGenerationProvider
           "Qwen Provider 图片长度无效。",
         );
       }
-      if (declaredLength > MAX_IMAGE_BYTES) {
+      if (declaredLength > QWEN_MAX_DOWNLOAD_BYTES) {
         throw invalidResponse(providerRequestId, "Qwen Provider 图片过大。");
       }
     }
 
-    const body = await readLimitedImageBody(response, providerRequestId);
+    const body = await readLimitedImageResponseBody(
+      response,
+      providerRequestId,
+      "Qwen Provider 图片",
+    );
 
     return { body, mimeType };
   }
@@ -332,48 +354,6 @@ export class QwenImageGenerationProvider
       }
     }
   }
-}
-
-async function readLimitedImageBody(
-  response: Response,
-  providerRequestId: string,
-): Promise<Uint8Array> {
-  if (!response.body) {
-    throw invalidResponse(providerRequestId, "Qwen Provider 图片响应为空。");
-  }
-
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let totalBytes = 0;
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value.byteLength === 0) continue;
-
-      totalBytes += value.byteLength;
-      if (totalBytes > MAX_IMAGE_BYTES) {
-        await reader.cancel().catch(() => undefined);
-        throw invalidResponse(providerRequestId, "Qwen Provider 图片过大。");
-      }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-
-  if (totalBytes === 0) {
-    throw invalidResponse(providerRequestId, "Qwen Provider 图片大小无效。");
-  }
-
-  const body = new Uint8Array(totalBytes);
-  let offset = 0;
-  for (const chunk of chunks) {
-    body.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return body;
 }
 
 function buildRequestBody(
@@ -413,19 +393,24 @@ function buildRequestBody(
 
 function buildProductMainImagePrompt(input: GenerationInput): string {
   const { styleSpec, productContext } = input;
-  return [
-    "基于输入图片生成一张正方形电商商品主图候选图。",
-    "图片1中的橙灰色应急启动电源充气泵是唯一可信的商品主体；必须保持同一设备的外形、颜色、结构、比例、屏幕与实体按键，不得替换型号、增加部件、虚构附件或生成第二个商品。",
-    "必须移除图片1中商品机身之外的手、车辆、配件栏、宣传标牌和原背景，只保留完整设备主体并置于新背景中。",
+  return compileQwenPrompt(
+    [
+      "基于图片1生成一张正方形电商商品主图候选图。",
+      "图片1是唯一可信的商品身份与视觉事实来源；必须保持同一商品的可见外形、颜色、结构、比例和已有部件，不得替换型号、增加部件、虚构附件或生成第二个商品。",
+      "必须移除图片1中的手、人物、非商品物体、宣传标牌和原背景，只保留完整商品主体并置于新背景中。",
     ...(input.visualReferences?.length
       ? [
           `图片2至图片${input.visualReferences.length + 1}仅用于参考背景、光线、构图和配色；不得复制其中的商品、文字、品牌、商标、包装或未经确认的卖点。`,
         ]
       : []),
     "只允许调整背景、环境、光线、阴影和构图；不得添加人物、手、价格、促销文字、额外商标或水印。",
-    "除设备自身屏幕和实体按键外，最终画面不得出现任何文字、字母、数字、单位、参数、徽章、标签、标牌、品牌、商标、logo 或宣传 claim；必须保持商品右侧留白为空白。",
-    `以下内容被业务明确禁止，最终画面中不得出现或变形复述：${productContext.forbiddenClaims.join("；")}。`,
+      "除商品自身已有的可见内容外，最终画面不得新增任何文字、数字、单位、参数、徽章、标签、标牌、品牌、商标、logo 或宣传 claim。",
     `最终输出必须是 ${input.canvas.width}×${input.canvas.height} 像素完整商品主图。`,
+    ],
+    [
+    ...(productContext.forbiddenClaims.length
+      ? [`业务禁止内容（不得出现或变形复述）：${productContext.forbiddenClaims.join("；")}。`]
+      : []),
     `商品：${productContext.productName}；类目：${productContext.category}。`,
     `已确认卖点：${productContext.sellingPoints.join("、")}。`,
     productContext.targetAudience
@@ -437,23 +422,27 @@ function buildProductMainImagePrompt(input: GenerationInput): string {
     `构图：商品位置 ${styleSpec.composition.productPlacement}；机位 ${styleSpec.composition.cameraAngle}；留白 ${styleSpec.composition.negativeSpace}。`,
     `配色：${styleSpec.palette.map((color) => `${color.hex} ${color.role}`).join("、")}。`,
     `装饰约束：${styleSpec.decorations.join("、") || "不添加额外装饰"}。`,
-  ]
-    .filter(Boolean)
-    .join("\n");
+    ],
+  );
 }
 
 function buildBackgroundPrompt(input: GenerationInput): string {
   const { styleSpec, productContext } = input;
-  return [
-    "生成一张正方形电商商品摄影背景图，只生成背景和环境。",
-    "不要绘制商品、包装、人物、文字、商标、价格标签或水印；商品将由编辑器作为独立图层叠加。",
+  return compileQwenPrompt(
+    [
+      "生成一张正方形电商商品摄影背景图，只生成背景和环境。",
+      "不要绘制商品、包装、人物、文字、商标、价格标签或水印；商品将由编辑器作为独立图层叠加。",
+      `最终输出必须是 ${input.canvas.width}×${input.canvas.height} 像素背景图。`,
+    ],
+    [
     `商品语境（仅用于构图留白，不得画出商品）：${productContext.productName}，${productContext.category}。`,
     `风格摘要：${styleSpec.summary}。`,
     `氛围：${styleSpec.moodKeywords.join("、")}。`,
     `背景场景：${styleSpec.background.scene}；材质：${styleSpec.background.texture}；光线：${styleSpec.background.lighting}。`,
     `构图：商品位置 ${styleSpec.composition.productPlacement}；机位 ${styleSpec.composition.cameraAngle}；留白 ${styleSpec.composition.negativeSpace}。`,
     `配色：${styleSpec.palette.map((color) => `${color.hex} ${color.role}`).join("、")}。`,
-  ].join("\n");
+    ],
+  );
 }
 
 function buildNegativePrompt(
@@ -489,93 +478,13 @@ function buildNegativePrompt(
       ]
     : ["商品主体", "产品包装", "文字", "字母", "数字", "logo", "商标"];
 
-  return [
-    ...input.productContext.forbiddenClaims,
-    ...modeSpecific,
-    ...common,
-    ...input.styleSpec.negativeConstraints,
-  ]
-    .join("，")
-    .slice(0, 500);
-}
-
-async function prepareProductReference(
-  reference: NonNullable<GenerationInput["productReference"]>,
-): Promise<string> {
-  if (
-    reference.body.byteLength === 0 ||
-    reference.body.byteLength > MAX_IMAGE_BYTES ||
-    !["image/png", "image/jpeg", "image/webp"].includes(reference.mimeType) ||
-    !Number.isInteger(reference.width) ||
-    !Number.isInteger(reference.height) ||
-    reference.width <= 0 ||
-    reference.height <= 0
-  ) {
-    throw invalidResponse(null, "Qwen 商品参考图输入无效。");
-  }
-
-  let image = sharp(reference.body, {
-    failOn: "error",
-    limitInputPixels: 100_000_000,
-  }).rotate();
-  let metadata;
-  try {
-    metadata = await image.metadata();
-  } catch {
-    throw invalidResponse(null, "Qwen 商品参考图无法解码。");
-  }
-  if (
-    !metadata.width ||
-    !metadata.height ||
-    metadata.width !== reference.width ||
-    metadata.height !== reference.height
-  ) {
-    throw invalidResponse(null, "Qwen 商品参考图尺寸与资产记录不一致。");
-  }
-
-  const scale = Math.min(
-    1,
-    MAX_REFERENCE_IMAGE_DIMENSION / metadata.width,
-    MAX_REFERENCE_IMAGE_DIMENSION / metadata.height,
+  return compileQwenNegativePrompt(
+    [...common, ...modeSpecific],
+    [
+      ...input.productContext.forbiddenClaims,
+      ...input.styleSpec.negativeConstraints,
+    ],
   );
-  const targetWidth = Math.max(
-    MIN_REFERENCE_IMAGE_DIMENSION,
-    Math.round(metadata.width * scale),
-  );
-  const targetHeight = Math.max(
-    MIN_REFERENCE_IMAGE_DIMENSION,
-    Math.round(metadata.height * scale),
-  );
-  image = image.resize(targetWidth, targetHeight, {
-    fit: "inside",
-    withoutEnlargement:
-      metadata.width >= MIN_REFERENCE_IMAGE_DIMENSION &&
-      metadata.height >= MIN_REFERENCE_IMAGE_DIMENSION,
-  });
-
-  let normalized: Buffer;
-  try {
-    normalized = await image.png({ compressionLevel: 9 }).toBuffer();
-  } catch {
-    throw invalidResponse(null, "Qwen 商品参考图归一化失败。");
-  }
-  let mimeType = "image/png";
-  if (normalized.byteLength > MAX_REFERENCE_IMAGE_BYTES) {
-    try {
-      normalized = await image
-        .flatten({ background: "#FFFFFF" })
-        .jpeg({ quality: 90, mozjpeg: true })
-        .toBuffer();
-    } catch {
-      throw invalidResponse(null, "Qwen 商品参考图归一化失败。");
-    }
-    mimeType = "image/jpeg";
-  }
-  if (normalized.byteLength > MAX_REFERENCE_IMAGE_BYTES) {
-    throw invalidResponse(null, "Qwen 商品参考图归一化后仍超过 10 MiB。" );
-  }
-
-  return `data:${mimeType};base64,${normalized.toString("base64")}`;
 }
 
 async function normalizeOutputImage(
@@ -611,7 +520,7 @@ async function normalizeOutputImage(
   } catch {
     throw invalidResponse(providerRequestId, "Qwen Provider 图片归一化失败。");
   }
-  if (normalized.byteLength > MAX_IMAGE_BYTES) {
+  if (normalized.byteLength > QWEN_MAX_DOWNLOAD_BYTES) {
     throw invalidResponse(providerRequestId, "Qwen Provider 归一化图片过大。");
   }
   return { body: Uint8Array.from(normalized), mimeType: "image/png" };
@@ -657,6 +566,7 @@ function mapHttpError(
       false,
       "Qwen Provider 认证失败。",
       providerRequestId,
+      "REJECTED",
     );
   }
   if (status === 429 || code.includes("throttl") || code.includes("ratelimit")) {
@@ -665,6 +575,7 @@ function mapHttpError(
       true,
       "Qwen Provider 请求受限。",
       providerRequestId,
+      "REJECTED",
     );
   }
   if (
@@ -677,6 +588,7 @@ function mapHttpError(
       false,
       "Qwen Provider 因内容策略拒绝了请求。",
       providerRequestId,
+      "REJECTED",
     );
   }
   if (status === 408 || status === 504 || status >= 500) {
@@ -685,6 +597,7 @@ function mapHttpError(
       true,
       "Qwen Provider 暂时不可用或请求超时。",
       providerRequestId,
+      "MAY_HAVE_BEEN_ACCEPTED",
     );
   }
   return invalidResponse(providerRequestId, "Qwen Provider 请求失败。");
@@ -757,11 +670,18 @@ function isTimeoutError(error: unknown): boolean {
 function invalidResponse(
   providerRequestId: string | null,
   message: string,
+  submissionDisposition:
+    | "NOT_SENT"
+    | "REJECTED"
+    | "MAY_HAVE_BEEN_ACCEPTED" = providerRequestId
+    ? "MAY_HAVE_BEEN_ACCEPTED"
+    : "NOT_SENT",
 ): ProviderAdapterError {
   return new ProviderAdapterError(
     "PROVIDER_INVALID_RESPONSE",
     false,
     message,
     providerRequestId,
+    submissionDisposition,
   );
 }

@@ -12,6 +12,7 @@ import type { Canvas } from "fabric";
 
 import {
   findGenerationForJob,
+  formatGenerationCost,
   isGenerationJobActive,
   type GenerationJobView,
   type GenerationResultView,
@@ -804,8 +805,7 @@ export default function DesignEditor({ projectId }: { projectId: string }) {
                   {generation.status} · request {generation.requestId}
                 </small>
                 <small>
-                  {generation.costMetadata.amount} {generation.costMetadata.currency}
-                  {generation.costMetadata.estimated ? "（估算）" : ""}
+                              {formatGenerationCost(generation.costMetadata)}
                 </small>
                 {!generation.asset.sourceAssetId && (
                   <button

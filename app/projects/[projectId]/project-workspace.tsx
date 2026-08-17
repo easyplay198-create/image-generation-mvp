@@ -6,6 +6,10 @@ import dynamic from "next/dynamic";
 import { useEffect, useState, type FormEvent } from "react";
 
 import BenchmarkPanel from "./benchmark-panel";
+import {
+  VISUAL_PIPELINE_CAPABILITY,
+  type BenchmarkRuntimeCapability,
+} from "@/src/vision/runtime-capability";
 
 const DesignEditor = dynamic(() => import("./design-editor"), {
   ssr: false,
@@ -69,7 +73,13 @@ type StyleSpecState = {
   latestJob: StyleAnalysisJob | null;
 };
 
-export default function ProjectWorkspace({ projectId }: { projectId: string }) {
+export default function ProjectWorkspace({
+  projectId,
+  benchmarkRuntimeCapability,
+}: {
+  projectId: string;
+  benchmarkRuntimeCapability: BenchmarkRuntimeCapability;
+}) {
   const [project, setProject] = useState<Project | null>(null);
   const [form, setForm] = useState<EditableProject | null>(null);
   const [styleSpecState, setStyleSpecState] = useState<StyleSpecState | null>(
@@ -549,8 +559,25 @@ export default function ProjectWorkspace({ projectId }: { projectId: string }) {
         )}
       </section>
 
+      <section className="panel">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Visual Pipeline capability</p>
+            <h2>Contracts / scaffolding only</h2>
+            <p className="summary">
+              Product Understanding、Visual DNA、Visual Strategy 与 Evaluation
+              当前仅提供合同、校验器和注入接口，不声明已具备端到端生产运行时。
+            </p>
+          </div>
+          <span className="count-badge">
+            {VISUAL_PIPELINE_CAPABILITY.runtimeAvailable ? "Runtime" : "No runtime"}
+          </span>
+        </div>
+      </section>
+
       <BenchmarkPanel
         projectId={projectId}
+        runtimeCapability={benchmarkRuntimeCapability}
         revision={
           styleRevision
             ? { id: styleRevision.id, revisionNumber: styleRevision.revisionNumber }

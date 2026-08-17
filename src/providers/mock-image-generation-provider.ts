@@ -28,9 +28,11 @@ const rawUsageSchema = z
     outputPixels: z.number().int().positive(),
     cost: z
       .object({
-        amount: z.string().regex(/^\d+(?:\.\d{1,6})?$/),
-        currency: z.string().regex(/^[A-Z]{3}$/),
-        estimated: z.boolean(),
+        status: z.literal("UNKNOWN"),
+        amount: z.null(),
+        currency: z.null(),
+        estimated: z.literal(false),
+        reason: z.literal("PRICING_NOT_VERIFIED"),
       })
       .strict(),
   })
@@ -65,6 +67,7 @@ export class MockImageGenerationProvider
           true,
           "图片生成 Provider 请求超时。",
           providerRequestId,
+          "MAY_HAVE_BEEN_ACCEPTED",
         );
       case "rate-limited":
         throw new ProviderAdapterError(
@@ -72,6 +75,7 @@ export class MockImageGenerationProvider
           true,
           "图片生成 Provider 请求受限。",
           providerRequestId,
+          "REJECTED",
         );
       case "policy-rejected":
         throw new ProviderAdapterError(
@@ -79,6 +83,7 @@ export class MockImageGenerationProvider
           false,
           "图片生成请求被 Provider 策略拒绝。",
           providerRequestId,
+          "REJECTED",
         );
       case "invalid-response":
       case "success":
@@ -97,6 +102,7 @@ export class MockImageGenerationProvider
         false,
         "图片生成 Provider 返回了无效任务状态。",
         input.providerRequestId,
+        "MAY_HAVE_BEEN_ACCEPTED",
       );
     }
 
@@ -122,9 +128,11 @@ export class MockImageGenerationProvider
         inputUnits: 200 + request.styleSpec.moodKeywords.length,
         outputPixels: request.canvas.width * request.canvas.height,
         cost: {
-          amount: "0.0000",
-          currency: "USD",
-          estimated: true,
+          status: "UNKNOWN",
+          amount: null,
+          currency: null,
+          estimated: false,
+          reason: "PRICING_NOT_VERIFIED",
         },
       },
     };

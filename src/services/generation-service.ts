@@ -15,6 +15,7 @@ import type { DatabaseClient } from "@/src/storage/database";
 import { withTransaction } from "@/src/storage/database";
 import type { ObjectStorage } from "@/src/storage/object-storage";
 import { GenerationContextAdapter } from "@/src/vision/generation-context/generation-context-adapter";
+import type { GenerationCostMetadata } from "@/src/providers/image-generation-provider";
 
 export type GenerationResultDto = {
   id: string;
@@ -32,11 +33,7 @@ export type GenerationResultDto = {
     inputUnits: number | null;
     outputPixels: number;
   };
-  costMetadata: {
-    amount: string;
-    currency: string;
-    estimated: boolean;
-  };
+  costMetadata: GenerationCostMetadata;
   asset: {
     id: string;
     sourceAssetId: string | null;

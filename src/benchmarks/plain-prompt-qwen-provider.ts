@@ -1,15 +1,23 @@
 import sharp from "sharp";
 import { z } from "zod";
 
-import type { GeneratedImagePayload } from "@/src/providers/image-generation-provider";
+import type {
+  GeneratedImagePayload,
+  ProductReferenceImage,
+} from "@/src/providers/image-generation-provider";
 import { ProviderAdapterError } from "@/src/providers/provider-error";
+import {
+  normalizeQwenInputImage,
+  QWEN_MAX_DOWNLOAD_BYTES,
+  readLimitedImageResponseBody,
+} from "@/src/providers/qwen-image-boundaries";
+import { assertQwenPromptBudget } from "@/src/providers/qwen-prompt";
 import {
   DEFAULT_QWEN_ENDPOINT,
   DEFAULT_QWEN_MODEL,
   DEFAULT_QWEN_TIMEOUT_MS,
 } from "@/src/providers/qwen-image-generation-provider";
 
-const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const QWEN_PATH = "/api/v1/services/aigc/multimodal-generation/generation";
 
 const responseSchema = z
@@ -59,12 +67,16 @@ export class PlainPromptQwenProvider {
 
   async generate(input: {
     prompt: string;
-    productReference: GeneratedImagePayload;
+    productReference: ProductReferenceImage;
     canvas: { width: 800; height: 800 };
   }): Promise<PlainPromptGenerationResult> {
     let providerRequestId: string | null = null;
     try {
-      const productImage = await prepareImage(input.productReference);
+      assertQwenPromptBudget(input.prompt);
+      const productImage = await normalizeQwenInputImage(
+        input.productReference,
+        "Benchmark 商品图",
+      );
       const response = await this.fetchImpl(this.endpoint, {
         method: "POST",
         headers: {
@@ -94,7 +106,13 @@ export class PlainPromptQwenProvider {
       const body = await readJson(response);
       if (!response.ok) throw mapHttpError(response.status, body);
       const parsed = responseSchema.safeParse(body);
-      if (!parsed.success) throw invalidResponse(null, "Qwen Benchmark 返回了无效响应。");
+      if (!parsed.success) {
+        throw invalidResponse(
+          null,
+          "Qwen Benchmark 返回了无效响应。",
+          "MAY_HAVE_BEEN_ACCEPTED",
+        );
+      }
       providerRequestId = parsed.data.request_id;
       const imageUrl = parsed.data.output.choices
         .flatMap((choice) => choice.message.content)
@@ -121,6 +139,7 @@ export class PlainPromptQwenProvider {
         true,
         timeout ? "Qwen Benchmark 请求超时。" : "Qwen Benchmark 网络请求失败。",
         providerRequestId,
+        "MAY_HAVE_BEEN_ACCEPTED",
       );
     }
   }
@@ -130,7 +149,13 @@ export class PlainPromptQwenProvider {
       generatedImages: raw.generatedImages,
       inputUnits: null,
       outputPixels: raw.generatedImages * raw.width * raw.height,
-      costMetadata: { amount: "0.0000", currency: "CNY", estimated: true },
+      costMetadata: {
+        status: "UNKNOWN" as const,
+        amount: null,
+        currency: null,
+        estimated: false as const,
+        reason: "PRICING_NOT_VERIFIED" as const,
+      },
     };
   }
 
@@ -144,10 +169,11 @@ export class PlainPromptQwenProvider {
     if (!response.ok || !response.body) throw invalidResponse(requestId, "Qwen Benchmark 图片下载失败。");
     const declared = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
     if (declared !== "image/png") throw invalidResponse(requestId, "Qwen Benchmark 图片类型不是 PNG。");
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.byteLength === 0 || bytes.byteLength > MAX_IMAGE_BYTES) {
-      throw invalidResponse(requestId, "Qwen Benchmark 图片大小无效。");
-    }
+    const bytes = await readLimitedImageResponseBody(
+      response,
+      requestId,
+      "Qwen Benchmark 图片",
+    );
     return { body: bytes, mimeType: "image/png" };
   }
 }
@@ -171,23 +197,6 @@ export function createPlainPromptQwenProvider(
   });
 }
 
-async function prepareImage(image: GeneratedImagePayload): Promise<string> {
-  if (image.body.byteLength === 0 || image.body.byteLength > MAX_IMAGE_BYTES) {
-    throw invalidResponse(null, "Benchmark 商品图大小无效。");
-  }
-  let normalized: Buffer;
-  try {
-    normalized = await sharp(image.body, { failOn: "error", limitInputPixels: 100_000_000 })
-      .rotate()
-      .resize(3_072, 3_072, { fit: "inside", withoutEnlargement: true })
-      .png({ compressionLevel: 9 })
-      .toBuffer();
-  } catch {
-    throw invalidResponse(null, "Benchmark 商品图无法解码。");
-  }
-  return `data:image/png;base64,${normalized.toString("base64")}`;
-}
-
 async function normalizeOutput(
   image: GeneratedImagePayload,
   canvas: { width: 800; height: 800 },
@@ -198,7 +207,7 @@ async function normalizeOutput(
       .resize(canvas.width, canvas.height, { fit: "contain", background: "#FFFFFF" })
       .png()
       .toBuffer();
-    if (normalized.byteLength > MAX_IMAGE_BYTES) throw new Error("too large");
+    if (normalized.byteLength > QWEN_MAX_DOWNLOAD_BYTES) throw new Error("too large");
     return { body: Uint8Array.from(normalized), mimeType: "image/png" };
   } catch {
     throw invalidResponse(requestId, "Qwen Benchmark 图片归一化失败。");
@@ -254,17 +263,50 @@ function mapHttpError(status: number, body: unknown) {
       ? body.code.toLowerCase()
       : "";
   if (status === 401 || status === 403) {
-    return new ProviderAdapterError("PROVIDER_AUTH_FAILED", false, "Qwen Benchmark 认证失败。");
+    return new ProviderAdapterError(
+      "PROVIDER_AUTH_FAILED",
+      false,
+      "Qwen Benchmark 认证失败。",
+      null,
+      "REJECTED",
+    );
   }
   if (status === 429 || code.includes("rate")) {
-    return new ProviderAdapterError("PROVIDER_RATE_LIMITED", true, "Qwen Benchmark 请求受限。");
+    return new ProviderAdapterError(
+      "PROVIDER_RATE_LIMITED",
+      true,
+      "Qwen Benchmark 请求受限。",
+      null,
+      "REJECTED",
+    );
   }
   if (status >= 500 || status === 408) {
-    return new ProviderAdapterError("PROVIDER_TIMEOUT", true, "Qwen Benchmark 暂时不可用。");
+    return new ProviderAdapterError(
+      "PROVIDER_TIMEOUT",
+      true,
+      "Qwen Benchmark 暂时不可用。",
+      null,
+      "MAY_HAVE_BEEN_ACCEPTED",
+    );
   }
   return invalidResponse(null, "Qwen Benchmark 请求失败。");
 }
 
-function invalidResponse(requestId: string | null, message: string) {
-  return new ProviderAdapterError("PROVIDER_INVALID_RESPONSE", false, message, requestId);
+function invalidResponse(
+  requestId: string | null,
+  message: string,
+  submissionDisposition:
+    | "NOT_SENT"
+    | "REJECTED"
+    | "MAY_HAVE_BEEN_ACCEPTED" = requestId
+    ? "MAY_HAVE_BEEN_ACCEPTED"
+    : "NOT_SENT",
+) {
+  return new ProviderAdapterError(
+    "PROVIDER_INVALID_RESPONSE",
+    false,
+    message,
+    requestId,
+    submissionDisposition,
+  );
 }

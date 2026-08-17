@@ -21,6 +21,13 @@ export type CreateBenchmarkRunInput = z.infer<
   typeof createBenchmarkRunSchema
 >;
 
+const listBenchmarkRunsSchema = z.object({
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+  cursor: id.optional(),
+});
+
+export type ListBenchmarkRunsInput = z.infer<typeof listBenchmarkRunsSchema>;
+
 const assetSnapshotSchema = z
   .object({
     assetId: id,
@@ -108,5 +115,17 @@ export function parseCreateBenchmarkRun(
 export function parseBenchmarkJobInput(input: unknown): BenchmarkJobInput {
   const parsed = benchmarkJobInputSchema.safeParse(input);
   if (!parsed.success) throw new Error("Persisted benchmark job input is invalid.");
+  return parsed.data;
+}
+
+export function parseListBenchmarkRuns(url: string): ListBenchmarkRunsInput {
+  const searchParams = new URL(url).searchParams;
+  const parsed = listBenchmarkRunsSchema.safeParse({
+    limit: searchParams.get("limit") ?? undefined,
+    cursor: searchParams.get("cursor") ?? undefined,
+  });
+  if (!parsed.success) {
+    throw new ApiError("VALIDATION_FAILED", 400, "Benchmark 列表参数无效。");
+  }
   return parsed.data;
 }
