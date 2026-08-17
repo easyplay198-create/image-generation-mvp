@@ -12,6 +12,7 @@ import type { Canvas } from "fabric";
 
 import {
   findGenerationForJob,
+  formatGenerationCost,
   isGenerationJobActive,
   type GenerationJobView,
   type GenerationResultView,
@@ -227,7 +228,9 @@ export default function DesignEditor({ projectId }: { projectId: string }) {
         }
         assetUrlsRef.current = assetUrls;
 
-        const latestBackground = nextData.generations[0]?.asset;
+        const latestBackground = nextData.generations.find(
+          (generation) => !generation.asset.sourceAssetId,
+        )?.asset;
         const productScale = Math.min(
           1,
           700 / Math.max(product.width, product.height),
@@ -320,10 +323,14 @@ export default function DesignEditor({ projectId }: { projectId: string }) {
       if (!completed) {
         throw new Error("任务已成功，但持久化生成结果暂不可见，请稍后刷新。");
       }
-      await applyGenerationBackground(completed);
-      setStatus(
-        "生成结果已保存并加载到画布；商品、文字和装饰图层保持不变。",
-      );
+      if (completed.asset.sourceAssetId) {
+        setStatus("800×800 商品主图已保存，并显示在生成结果中。");
+      } else {
+        await applyGenerationBackground(completed);
+        setStatus(
+          "生成结果已保存并加载到画布；商品、文字和装饰图层保持不变。",
+        );
+      }
     },
     [applyGenerationBackground, projectId],
   );
@@ -451,7 +458,7 @@ export default function DesignEditor({ projectId }: { projectId: string }) {
     }
 
     setGenerationSubmitting(true);
-    setStatus("正在创建背景生成任务…");
+    setStatus("正在用当前 StyleSpec revision 创建 800×800 主图任务…");
     try {
       const response = await fetch(
         `/api/projects/${projectId}/generation-jobs`,
@@ -715,9 +722,9 @@ export default function DesignEditor({ projectId }: { projectId: string }) {
         <div className="generation-flow-panel">
           <div className="generation-flow-actions">
             <div>
-              <strong>AI 背景生成</strong>
+              <strong>AI 商品主图生成</strong>
               <p>
-                使用已配置的 Provider Adapter 创建异步任务；默认 Mock 不需要生产 Key。
+                使用当前 StyleSpec revision、商品图和视觉参考图创建 800×800 异步任务。
               </p>
             </div>
             <button
@@ -732,7 +739,7 @@ export default function DesignEditor({ projectId }: { projectId: string }) {
                   ? "生成处理中…"
                   : generationJob && generationJob.status !== "SUCCEEDED"
                     ? "重新生成"
-                    : "生成新背景"}
+                    : "生成 800×800 主图"}
             </button>
           </div>
           {generationJob && (
@@ -744,6 +751,7 @@ export default function DesignEditor({ projectId }: { projectId: string }) {
                 Provider: {generationJob.providerName ?? "待分配"} · 尝试 {generationJob.attemptCount}/
                 {generationJob.maxAttempts}
               </small>
+              <small>StyleSpec: {generationJob.styleSpecRevisionId ?? "未绑定"}</small>
               {generationJob.errorMessage && (
                 <small className="job-error">
                   {generationJob.errorCode}: {generationJob.errorMessage}
@@ -763,13 +771,13 @@ export default function DesignEditor({ projectId }: { projectId: string }) {
             onChange={(event) => void switchBackground(event.target.value)}
           >
             <option value="">纯色画布（无 AI 背景）</option>
-            {data.generations.map((generation, index) => (
+            {data.generations.filter((generation) => !generation.asset.sourceAssetId).map((generation, index) => (
               <option value={generation.asset.id} key={generation.id}>
                 生成背景 {index + 1} · {generation.asset.width} × {generation.asset.height}
               </option>
             ))}
           </select>
-          {data.generations.length === 0 && (
+          {data.generations.filter((generation) => !generation.asset.sourceAssetId).length === 0 && (
             <small>当前没有生成背景；启动 generation worker 后可创建任务。</small>
           )}
         </label>
@@ -781,28 +789,34 @@ export default function DesignEditor({ projectId }: { projectId: string }) {
             <article className="generation-result-card" key={generation.id}>
               <Image
                 src={generation.resultUrl}
-                alt="已生成的商品背景"
+                alt={generation.asset.sourceAssetId ? "已生成的商品主图" : "已生成的商品背景"}
                 width={92}
                 height={92}
                 unoptimized
               />
               <div>
-                <strong>{generation.providerName}</strong>
+                <strong>
+                  {generation.asset.sourceAssetId ? "商品主图" : "商品背景"} · {generation.providerName}
+                </strong>
+                <small>
+                  {generation.asset.width} × {generation.asset.height} · StyleSpec {generation.styleSpecRevisionId}
+                </small>
                 <small>
                   {generation.status} · request {generation.requestId}
                 </small>
                 <small>
-                  {generation.costMetadata.amount} {generation.costMetadata.currency}
-                  {generation.costMetadata.estimated ? "（估算）" : ""}
+                              {formatGenerationCost(generation.costMetadata)}
                 </small>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  disabled={busy}
-                  onClick={() => void loadGenerationIntoCanvas(generation)}
-                >
-                  加载到画布
-                </button>
+                {!generation.asset.sourceAssetId && (
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    disabled={busy}
+                    onClick={() => void loadGenerationIntoCanvas(generation)}
+                  >
+                    加载到画布
+                  </button>
+                )}
               </div>
             </article>
           ))}

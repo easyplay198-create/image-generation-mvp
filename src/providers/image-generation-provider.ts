@@ -6,6 +6,12 @@ export type GeneratedImagePayload = {
   mimeType: string;
 };
 
+export type ProductReferenceImage = GeneratedImagePayload & {
+  assetId: string;
+  width: number;
+  height: number;
+};
+
 export type ImageGenerationSubmission = {
   providerRequestId: string;
 };
@@ -18,15 +24,30 @@ export type ImageGenerationStatus =
       rawUsage: unknown;
     };
 
+export type GenerationCostMetadata =
+  | {
+      status: "UNKNOWN";
+      amount: null;
+      currency: null;
+      estimated: false;
+      reason: "PRICING_NOT_VERIFIED" | "LEGACY_UNVERIFIED_COST";
+    }
+  | {
+      status: "ESTIMATED";
+      amount: string;
+      currency: string;
+      estimated: true;
+      model: string;
+      region: string;
+      pricingVersion: string;
+      source: string;
+    };
+
 export type NormalizedGenerationUsage = {
   generatedImages: number;
   inputUnits: number | null;
   outputPixels: number;
-  costMetadata: {
-    amount: string;
-    currency: string;
-    estimated: boolean;
-  };
+  costMetadata: GenerationCostMetadata;
 };
 
 export interface ImageGenerationProvider {
@@ -38,6 +59,8 @@ export interface ImageGenerationProvider {
     productContext: ProductInfo;
     canvas: { width: number; height: number };
     idempotencyKey: string;
+    productReference?: ProductReferenceImage;
+    visualReferences?: ProductReferenceImage[];
   }): Promise<ImageGenerationSubmission>;
 
   getJobStatus(input: {

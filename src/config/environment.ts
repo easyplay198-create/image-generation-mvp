@@ -13,9 +13,17 @@ type Environment = Record<string, string | undefined>;
 export function getMissingEnvironmentVariables(
   environment: Environment = process.env,
 ) {
-  return REQUIRED_SERVER_ENVIRONMENT_VARIABLES.filter(
+  const missing = REQUIRED_SERVER_ENVIRONMENT_VARIABLES.filter(
     (name) => !environment[name]?.trim(),
   );
+  if (
+    environment.IMAGE_GENERATION_PROVIDER?.trim() === "qwen" &&
+    !environment.QWEN_API_KEY?.trim()
+  ) {
+    return [...missing, "QWEN_API_KEY"];
+  }
+
+  return missing;
 }
 
 export function assertServerEnvironment(

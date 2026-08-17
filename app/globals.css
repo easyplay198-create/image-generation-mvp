@@ -599,6 +599,148 @@ textarea:focus {
   justify-self: start;
 }
 
+.benchmark-panel {
+  display: grid;
+  gap: 24px;
+  margin: 24px 0;
+}
+
+.benchmark-create,
+.benchmark-runs,
+.benchmark-run,
+.benchmark-card {
+  display: grid;
+  gap: 16px;
+}
+
+.benchmark-create {
+  padding: 18px;
+  border: 1px solid #dfe4f4;
+  border-radius: 14px;
+  background: #f7f8ff;
+}
+
+.benchmark-create label {
+  display: grid;
+  gap: 8px;
+  color: #364057;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.benchmark-create button {
+  justify-self: start;
+}
+
+.benchmark-invariants {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.benchmark-invariants span {
+  padding: 6px 9px;
+  border-radius: 999px;
+  background: #eef0ff;
+  color: #4055ce;
+  font-size: 0.75rem;
+  font-weight: 750;
+}
+
+.benchmark-run {
+  padding: 18px;
+  border: 1px solid #e1e4eb;
+  border-radius: 16px;
+  background: #fbfcff;
+}
+
+.benchmark-run > header,
+.benchmark-card-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.benchmark-run > header > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.benchmark-run small {
+  color: #737d91;
+}
+
+.benchmark-compare {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.benchmark-card {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid #dfe3ec;
+  border-radius: 14px;
+  background: #fff;
+}
+
+.benchmark-card > img,
+.benchmark-placeholder {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 10px;
+  background: #eff1f6;
+  object-fit: contain;
+}
+
+.benchmark-placeholder {
+  display: grid;
+  place-items: center;
+  color: #7a849a;
+  font-weight: 700;
+}
+
+.benchmark-card dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.benchmark-card dl > div {
+  min-width: 0;
+  padding: 9px;
+  border-radius: 8px;
+  background: #f7f8fb;
+}
+
+.benchmark-card dt {
+  color: #737d91;
+  font-size: 0.7rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.benchmark-card dd {
+  overflow-wrap: anywhere;
+  margin: 4px 0 0;
+  color: #263149;
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.benchmark-card .benchmark-wide {
+  grid-column: 1 / -1;
+}
+
+.benchmark-card pre {
+  overflow: auto;
+  max-height: 280px;
+  margin: 0;
+  white-space: pre-wrap;
+}
+
 .editor-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(260px, 330px);
@@ -780,6 +922,10 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 
+  .benchmark-compare {
+    grid-template-columns: 1fr;
+  }
+
   .layer-sidebar {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -810,6 +956,11 @@ textarea:focus {
   .generation-flow-actions {
     align-items: stretch;
     grid-template-columns: 1fr;
+  }
+
+  .benchmark-run > header {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .generation-flow-actions {

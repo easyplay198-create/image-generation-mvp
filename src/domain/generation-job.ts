@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { ApiError } from "@/src/http/api";
+import { generationContextSourceSchema } from "@/src/vision/contracts/generation-context";
 
 const idempotencyKeySchema = z
   .string({ error: "幂等键必须是字符串。" })
@@ -17,6 +18,7 @@ export const createGenerationJobSchema = z
       .trim()
       .min(1, "必须明确指定 StyleSpec revision。")
       .max(120, "StyleSpec revision ID 过长。"),
+    generationContext: generationContextSourceSchema.optional(),
   })
   .strict();
 
@@ -24,21 +26,34 @@ export type CreateGenerationJobInput = z.infer<
   typeof createGenerationJobSchema
 >;
 
-export const generationJobInputSchema = z
+const generationAssetSnapshotSchema = z
+  .object({
+    assetId: z.string().min(1).max(120),
+    mimeType: z.enum(["image/png", "image/jpeg", "image/webp"]),
+    width: z.number().int().positive().max(8_192),
+    height: z.number().int().positive().max(8_192),
+    byteSize: z.number().int().positive().max(20 * 1024 * 1024),
+    sha256: z.string().min(1).max(128),
+  })
+  .strict();
+
+const generationProductContextSchema = z
+  .object({
+    productName: z.string().min(1).max(200),
+    category: z.string().min(1).max(120),
+    sellingPoints: z.array(z.string().min(1).max(200)).min(1).max(5),
+    targetAudience: z.string().max(500).nullable(),
+    forbiddenClaims: z.array(z.string().min(1).max(200)).max(20),
+  })
+  .strict();
+
+const legacyGenerationJobInputSchema = z
   .object({
     schemaVersion: z.literal("1.0"),
     requestId: z.string().uuid(),
     idempotencyKey: idempotencyKeySchema,
     styleSpecRevisionId: z.string().min(1).max(120),
-    productContext: z
-      .object({
-        productName: z.string().min(1).max(200),
-        category: z.string().min(1).max(120),
-        sellingPoints: z.array(z.string().min(1).max(200)).min(1).max(5),
-        targetAudience: z.string().max(500).nullable(),
-        forbiddenClaims: z.array(z.string().min(1).max(200)).max(20),
-      })
-      .strict(),
+    productContext: generationProductContextSchema,
     canvas: z
       .object({
         width: z.literal(1080),
@@ -47,6 +62,35 @@ export const generationJobInputSchema = z
       .strict(),
   })
   .strict();
+
+const currentGenerationJobInputSchema = z
+  .object({
+    schemaVersion: z.literal("1.1"),
+    requestId: z.string().uuid(),
+    idempotencyKey: idempotencyKeySchema,
+    styleSpecRevisionId: z.string().min(1).max(120),
+    productContext: generationProductContextSchema,
+    generationContext: z
+      .object({
+        schemaVersion: z.literal("1.0"),
+        styleSpecRevisionNumber: z.number().int().positive(),
+        productReference: generationAssetSnapshotSchema.optional(),
+        visualReferences: z.array(generationAssetSnapshotSchema).max(2),
+        canvas: z
+          .object({
+            width: z.literal(800),
+            height: z.literal(800),
+          })
+          .strict(),
+      })
+      .strict(),
+  })
+  .strict();
+
+export const generationJobInputSchema = z.discriminatedUnion("schemaVersion", [
+  legacyGenerationJobInputSchema,
+  currentGenerationJobInputSchema,
+]);
 
 export type GenerationJobInput = z.infer<typeof generationJobInputSchema>;
 

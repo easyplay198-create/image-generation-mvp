@@ -159,17 +159,19 @@ describe("T-04 image generation workflow", () => {
       durationMs: expect.any(Number),
       usage: {
         generatedImages: 1,
-        outputPixels: 1080 * 1080,
+        outputPixels: 800 * 800,
       },
       costMetadata: {
-        amount: "0.0000",
-        currency: "USD",
-        estimated: true,
+        status: "UNKNOWN",
+        amount: null,
+        currency: null,
+        estimated: false,
+        reason: "PRICING_NOT_VERIFIED",
       },
       asset: {
         mimeType: "image/png",
-        width: 1080,
-        height: 1080,
+        width: 800,
+        height: 800,
         previewUrl: `/api/projects/${projectId}/generations/${generations[0]!.id}/preview`,
       },
     });
@@ -246,7 +248,7 @@ describe("T-04 image generation workflow", () => {
     await expect(worker.runOnce()).resolves.toBe(true);
     await expect(jobService.getJob(ownerId, job.id)).resolves.toMatchObject({
       status: JobStatus.FAILED,
-      errorCode: "PROVIDER_INVALID_RESPONSE",
+      errorCode: "PROVIDER_SUBMISSION_AMBIGUOUS",
     });
     await expect(
       database.generationResult.count({ where: { ownerId, projectId } }),

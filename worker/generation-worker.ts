@@ -1,8 +1,12 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 
 import type { Job } from "@/src/generated/prisma/client";
-import { AssetKind, JobStatus } from "@/src/generated/prisma/client";
+import {
+  AssetKind,
+  JobStatus,
+  ProviderSubmissionState,
+} from "@/src/generated/prisma/client";
 import { parseGenerationJobInput } from "@/src/domain/generation-job";
 import {
   validateGeneratedBackground,
@@ -34,6 +38,7 @@ type WorkerFailure = {
     | "PROVIDER_POLICY_REJECTED"
     | "PROVIDER_TIMEOUT"
     | "PROVIDER_INVALID_RESPONSE"
+    | "PROVIDER_SUBMISSION_AMBIGUOUS"
     | "STYLE_SPEC_INVALID"
     | "STORAGE_FAILED"
     | "DATABASE_FAILED"
@@ -43,6 +48,7 @@ type WorkerFailure = {
   retryable: boolean;
   providerRequestId: string | null;
   source: "provider" | "validation" | "storage" | "database" | "internal";
+  submissionState: "NOT_STARTED" | "SUBMITTING" | "SUBMITTED";
 };
 
 export class GenerationWorker {
@@ -62,9 +68,27 @@ export class GenerationWorker {
     const startedAt = Date.now();
     let requestId: string | undefined;
     let providerRequestId: string | null = null;
+    let submissionState: WorkerFailure["submissionState"] = "NOT_STARTED";
+    let leaseLost = false;
+    const heartbeat = setInterval(() => {
+      void this.heartbeat(job).then((active) => {
+        if (!active) leaseLost = true;
+      }).catch(() => {
+        leaseLost = true;
+      });
+    }, Math.max(10, Math.floor(this.leaseTimeoutMs / 3)));
+    heartbeat.unref();
 
     try {
       const input = parseGenerationJobInput(job.inputJson);
+      const generationContext =
+        input.schemaVersion === "1.1"
+          ? input.generationContext
+          : {
+              canvas: input.canvas,
+              productReference: undefined,
+              visualReferences: [],
+            };
       requestId = input.requestId;
       const revision = await this.database.styleSpecRevision.findFirst({
         where: {
@@ -96,12 +120,34 @@ export class GenerationWorker {
       }
 
       const providerStartedAt = Date.now();
+      const productReference = generationContext.productReference
+        ? await this.loadProductReference({
+            ownerId: job.ownerId,
+            projectId: job.projectId,
+            reference: generationContext.productReference,
+            kind: AssetKind.PRODUCT,
+          })
+        : undefined;
+      const visualReferences = await Promise.all(
+        generationContext.visualReferences.map((reference) =>
+          this.loadProductReference({
+            ownerId: job.ownerId,
+            projectId: job.projectId,
+            reference,
+            kind: AssetKind.REFERENCE,
+          }),
+        ),
+      );
+      await this.markSubmitting(job, `${job.id}:${input.idempotencyKey}`);
+      submissionState = "SUBMITTING";
       const submission: unknown = await this.provider.generateBackground({
         projectId: job.projectId,
         styleSpec,
         productContext: input.productContext,
-        canvas: input.canvas,
+        canvas: generationContext.canvas,
         idempotencyKey: input.idempotencyKey,
+        productReference,
+        visualReferences,
       });
       providerRequestId =
         typeof submission === "object" &&
@@ -119,15 +165,27 @@ export class GenerationWorker {
           "PROVIDER_INVALID_RESPONSE",
           false,
           "图片生成 Provider 返回了无效请求 ID。",
+          null,
+          "MAY_HAVE_BEEN_ACCEPTED",
         );
       }
-      await this.recordProviderRequestId(job, providerRequestId);
+      if (leaseLost) {
+        throw workerFailure(
+          "PROVIDER_SUBMISSION_AMBIGUOUS",
+          "Provider 提交期间任务租约丢失，禁止自动重试。",
+          "database",
+          providerRequestId,
+          "SUBMITTED",
+        );
+      }
+      await this.markSubmitted(job, providerRequestId);
+      submissionState = "SUBMITTED";
 
       const status = await this.waitForProvider(job, providerRequestId);
       const providerDurationMs = Date.now() - providerStartedAt;
       const image = await validateGeneratedBackground(
         status.image,
-        input.canvas,
+        generationContext.canvas,
         providerRequestId,
       );
       const usage = validateNormalizedGenerationUsage(
@@ -141,6 +199,8 @@ export class GenerationWorker {
         providerRequestId,
         providerDurationMs,
         styleSpecRevisionId: input.styleSpecRevisionId,
+        productReferenceAssetId:
+          generationContext.productReference?.assetId,
         image,
         usage,
       });
@@ -154,7 +214,11 @@ export class GenerationWorker {
         result: "succeeded",
       });
     } catch (error) {
-      const failure = toWorkerFailure(error, providerRequestId);
+      const failure = toWorkerFailure(
+        error,
+        providerRequestId,
+        submissionState,
+      );
       const status = await this.failOrRetry(job, failure);
       logWorkerResult({
         job,
@@ -165,37 +229,92 @@ export class GenerationWorker {
         result: status === JobStatus.QUEUED ? "retrying" : "failed",
         errorCode: failure.code,
         failureSource: failure.source,
+        ...(failure.code === "INTERNAL_ERROR"
+          ? { originalError: describeUnexpectedError(error) }
+          : {}),
       });
+    } finally {
+      clearInterval(heartbeat);
     }
 
     return true;
   }
 
   async recoverExpiredJobs(): Promise<number> {
-    const expiredBefore = new Date(Date.now() - this.leaseTimeoutMs);
-
-    return this.database.$executeRaw`
+    const terminalizedAmbiguous = await this.database.$executeRaw`
+      UPDATE "Job"
+      SET
+        "status" = 'FAILED'::"JobStatus",
+        "lockedAt" = NULL,
+        "leaseToken" = NULL,
+        "finishedAt" = COALESCE(
+          "finishedAt",
+          (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+        ),
+        "errorCode" = 'PROVIDER_SUBMISSION_AMBIGUOUS',
+        "errorMessage" = '图片生成 Provider 提交状态不明确，禁止自动重试。',
+        "updatedAt" = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+      WHERE "type" = 'IMAGE_GENERATION'::"JobType"
+        AND "status" = 'RUNNING'::"JobStatus"
+        AND "providerSubmissionState" = 'AMBIGUOUS'::"ProviderSubmissionState"
+    `;
+    const recoveredExpired = await this.database.$executeRaw`
       UPDATE "Job"
       SET
         "status" = CASE
-          WHEN "attemptCount" < "maxAttempts" THEN 'QUEUED'::"JobStatus"
+          WHEN "providerSubmissionState" = 'NOT_STARTED'::"ProviderSubmissionState"
+            AND "providerInvocationKey" IS NULL
+            AND "providerRequestId" IS NULL
+            AND "attemptCount" < "maxAttempts" THEN 'QUEUED'::"JobStatus"
           ELSE 'FAILED'::"JobStatus"
         END,
         "lockedAt" = NULL,
-        "finishedAt" = CASE
-          WHEN "attemptCount" < "maxAttempts" THEN NULL
-          ELSE CURRENT_TIMESTAMP
+        "leaseToken" = NULL,
+        "providerSubmissionState" = CASE
+          WHEN "providerSubmissionState" = 'NOT_STARTED'::"ProviderSubmissionState"
+            AND "providerInvocationKey" IS NULL
+            AND "providerRequestId" IS NULL
+            THEN 'NOT_STARTED'::"ProviderSubmissionState"
+          ELSE 'AMBIGUOUS'::"ProviderSubmissionState"
         END,
-        "errorCode" = 'WORKER_LEASE_EXPIRED',
-        "errorMessage" = '图片生成 Worker 中断，任务租约已过期。',
-        "updatedAt" = CURRENT_TIMESTAMP
+        "finishedAt" = CASE
+          WHEN "providerSubmissionState" = 'NOT_STARTED'::"ProviderSubmissionState"
+            AND "providerInvocationKey" IS NULL
+            AND "providerRequestId" IS NULL
+            AND "attemptCount" < "maxAttempts" THEN NULL
+          ELSE (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+        END,
+        "errorCode" = CASE
+          WHEN "providerSubmissionState" = 'NOT_STARTED'::"ProviderSubmissionState"
+            AND "providerInvocationKey" IS NULL
+            AND "providerRequestId" IS NULL
+            THEN 'WORKER_LEASE_EXPIRED'
+          ELSE 'PROVIDER_SUBMISSION_AMBIGUOUS'
+        END,
+        "errorMessage" = CASE
+          WHEN "providerSubmissionState" = 'NOT_STARTED'::"ProviderSubmissionState"
+            AND "providerInvocationKey" IS NULL
+            AND "providerRequestId" IS NULL
+            THEN '图片生成 Worker 中断，任务租约已过期。'
+          ELSE '图片生成 Worker 在 Provider 提交后中断，禁止自动重试。'
+        END,
+        "updatedAt" = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
       WHERE "type" = 'IMAGE_GENERATION'::"JobType"
         AND "status" = 'RUNNING'::"JobStatus"
-        AND "lockedAt" < ${expiredBefore}
+        AND "providerSubmissionState" <> 'AMBIGUOUS'::"ProviderSubmissionState"
+        AND (
+          "lockedAt" IS NULL
+          OR "lockedAt" < (
+            (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+            - (${this.leaseTimeoutMs} * INTERVAL '1 millisecond')
+          )
+        )
     `;
+    return terminalizedAmbiguous + recoveredExpired;
   }
 
   private async claimNextJob(): Promise<Job | null> {
+    const leaseToken = randomUUID();
     const jobs = await this.database.$queryRaw<Job[]>`
       WITH candidate AS (
         SELECT "id"
@@ -212,12 +331,16 @@ export class GenerationWorker {
       SET
         "status" = 'RUNNING'::"JobStatus",
         "attemptCount" = job."attemptCount" + 1,
-        "lockedAt" = CURRENT_TIMESTAMP,
-        "startedAt" = COALESCE(job."startedAt", CURRENT_TIMESTAMP),
+        "lockedAt" = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
+        "leaseToken" = ${leaseToken},
+        "startedAt" = COALESCE(
+          job."startedAt",
+          (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+        ),
         "finishedAt" = NULL,
         "errorCode" = NULL,
         "errorMessage" = NULL,
-        "updatedAt" = CURRENT_TIMESTAMP
+        "updatedAt" = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
       FROM candidate
       WHERE job."id" = candidate."id"
       RETURNING job.*
@@ -226,26 +349,73 @@ export class GenerationWorker {
     return jobs[0] ?? null;
   }
 
-  private async recordProviderRequestId(
+  private async markSubmitting(
+    job: Job,
+    providerInvocationKey: string,
+  ) {
+    const count = await this.database.$executeRaw`
+      UPDATE "Job"
+      SET
+        "providerInvocationKey" = ${providerInvocationKey},
+        "providerSubmissionState" = 'SUBMITTING'::"ProviderSubmissionState",
+        "lockedAt" = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
+        "updatedAt" = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+      WHERE "id" = ${job.id}
+        AND "ownerId" = ${job.ownerId}
+        AND "status" = 'RUNNING'::"JobStatus"
+        AND "leaseToken" = ${job.leaseToken}
+        AND "providerSubmissionState" = 'NOT_STARTED'::"ProviderSubmissionState"
+    `;
+    if (count !== 1) {
+      throw workerFailure(
+        "DATABASE_FAILED",
+        "无法取得 Provider 提交 fencing 权限。",
+        "database",
+      );
+    }
+  }
+
+  private async markSubmitted(
     job: Job,
     providerRequestId: string,
   ) {
-    const update = await this.database.job.updateMany({
-      where: {
-        id: job.id,
-        ownerId: job.ownerId,
-        status: JobStatus.RUNNING,
-      },
-      data: { providerRequestId, lockedAt: new Date() },
-    });
-    if (update.count !== 1) {
+    const count = await this.database.$executeRaw`
+      UPDATE "Job"
+      SET
+        "providerRequestId" = ${providerRequestId},
+        "providerSubmissionState" = 'SUBMITTED'::"ProviderSubmissionState",
+        "providerSubmittedAt" = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
+        "lockedAt" = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
+        "updatedAt" = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+      WHERE "id" = ${job.id}
+        AND "ownerId" = ${job.ownerId}
+        AND "status" = 'RUNNING'::"JobStatus"
+        AND "leaseToken" = ${job.leaseToken}
+        AND "providerSubmissionState" = 'SUBMITTING'::"ProviderSubmissionState"
+    `;
+    if (count !== 1) {
       throw workerFailure(
         "DATABASE_FAILED",
         "无法记录 Provider 请求 ID。",
         "database",
         providerRequestId,
+        "SUBMITTED",
       );
     }
+  }
+
+  private async heartbeat(job: Job): Promise<boolean> {
+    const count = await this.database.$executeRaw`
+      UPDATE "Job"
+      SET
+        "lockedAt" = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
+        "updatedAt" = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+      WHERE "id" = ${job.id}
+        AND "ownerId" = ${job.ownerId}
+        AND "status" = 'RUNNING'::"JobStatus"
+        AND "leaseToken" = ${job.leaseToken}
+    `;
+    return count === 1;
   }
 
   private async waitForProvider(
@@ -283,15 +453,17 @@ export class GenerationWorker {
         );
       }
 
-      await this.database.job.updateMany({
-        where: {
-          id: job.id,
-          ownerId: job.ownerId,
-          providerRequestId,
-          status: JobStatus.RUNNING,
-        },
-        data: { lockedAt: new Date() },
-      });
+      await this.database.$executeRaw`
+        UPDATE "Job"
+        SET
+          "lockedAt" = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
+          "updatedAt" = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+        WHERE "id" = ${job.id}
+          AND "ownerId" = ${job.ownerId}
+          AND "providerRequestId" = ${providerRequestId}
+          AND "status" = 'RUNNING'::"JobStatus"
+          AND "leaseToken" = ${job.leaseToken}
+      `;
       await delay(this.pollDelayMs);
     }
 
@@ -309,6 +481,7 @@ export class GenerationWorker {
     providerRequestId: string;
     providerDurationMs: number;
     styleSpecRevisionId: string;
+    productReferenceAssetId?: string;
     image: ValidatedGeneratedBackground;
     usage: NormalizedGenerationUsage;
   }): Promise<void> {
@@ -321,7 +494,9 @@ export class GenerationWorker {
         contentType: input.image.mimeType,
         metadata: {
           sha256: input.image.sha256,
-          kind: "generated-background",
+          kind: input.productReferenceAssetId
+            ? "product-main-candidate"
+            : "generated-background",
           jobId: input.job.id,
         },
       });
@@ -331,6 +506,7 @@ export class GenerationWorker {
         "生成背景写入对象存储失败。",
         "storage",
         input.providerRequestId,
+        "SUBMITTED",
       );
     }
 
@@ -351,6 +527,7 @@ export class GenerationWorker {
             id: input.job.id,
             ownerId: input.job.ownerId,
             status: JobStatus.RUNNING,
+            leaseToken: input.job.leaseToken,
           },
           select: { id: true },
         });
@@ -369,6 +546,7 @@ export class GenerationWorker {
             width: input.image.width,
             height: input.image.height,
             sha256: input.image.sha256,
+            sourceAssetId: input.productReferenceAssetId,
           },
         });
         await transaction.generationResult.create({
@@ -395,11 +573,14 @@ export class GenerationWorker {
             id: input.job.id,
             ownerId: input.job.ownerId,
             status: JobStatus.RUNNING,
+            leaseToken: input.job.leaseToken,
           },
           data: {
             status: JobStatus.SUCCEEDED,
             providerRequestId: input.providerRequestId,
             lockedAt: null,
+            leaseToken: null,
+            providerSubmissionState: ProviderSubmissionState.COMPLETED,
             finishedAt: new Date(),
             errorCode: null,
             errorMessage: null,
@@ -418,6 +599,7 @@ export class GenerationWorker {
           "生成结果事务失败，且对象补偿删除失败。",
           "storage",
           input.providerRequestId,
+          "SUBMITTED",
         );
       }
 
@@ -426,15 +608,87 @@ export class GenerationWorker {
         "生成结果数据库事务失败。",
         "database",
         input.providerRequestId,
+        "SUBMITTED",
       );
     }
+  }
+
+  private async loadProductReference(input: {
+    ownerId: string;
+    projectId: string;
+    kind: typeof AssetKind.PRODUCT | typeof AssetKind.REFERENCE;
+    reference: {
+      assetId: string;
+      mimeType: string;
+      width: number;
+      height: number;
+      byteSize: number;
+      sha256: string;
+    };
+  }) {
+    const asset = await this.database.asset.findFirst({
+      where: {
+        id: input.reference.assetId,
+        ownerId: input.ownerId,
+        projectId: input.projectId,
+        kind: input.kind,
+      },
+    });
+    if (
+      !asset ||
+      asset.mimeType !== input.reference.mimeType ||
+      asset.width !== input.reference.width ||
+      asset.height !== input.reference.height ||
+      Number(asset.byteSize) !== input.reference.byteSize ||
+      asset.sha256 !== input.reference.sha256
+    ) {
+      throw workerFailure(
+        "PROVIDER_INVALID_RESPONSE",
+        "Generation Context 图片快照无效或资产已发生变化。",
+        "validation",
+      );
+    }
+
+    let object: Awaited<ReturnType<ObjectStorage["getObject"]>>;
+    try {
+      object = await this.storage.getObject(asset.objectKey);
+    } catch {
+      throw workerFailure(
+        "STORAGE_FAILED",
+        "读取 Generation Context 图片失败。",
+        "storage",
+      );
+    }
+    if (
+      object.contentType.toLowerCase() !== asset.mimeType.toLowerCase() ||
+      object.body.byteLength !== Number(asset.byteSize) ||
+      createHash("sha256").update(object.body).digest("hex") !== asset.sha256
+    ) {
+      throw workerFailure(
+        "STORAGE_FAILED",
+        "Generation Context 图片对象与资产记录不一致。",
+        "storage",
+      );
+    }
+
+    return {
+      assetId: asset.id,
+      body: object.body,
+      mimeType: asset.mimeType,
+      width: asset.width,
+      height: asset.height,
+    };
   }
 
   private async failOrRetry(
     job: Job,
     failure: WorkerFailure,
   ): Promise<Job["status"]> {
-    const retry = failure.retryable && job.attemptCount < job.maxAttempts;
+    const retry =
+      failure.submissionState !== "SUBMITTED" &&
+      failure.code !== "PROVIDER_SUBMISSION_AMBIGUOUS" &&
+      failure.retryable &&
+      job.attemptCount < job.maxAttempts;
     const status = retry ? JobStatus.QUEUED : JobStatus.FAILED;
 
     await this.database.job.updateMany({
@@ -442,6 +696,7 @@ export class GenerationWorker {
         id: job.id,
         ownerId: job.ownerId,
         status: JobStatus.RUNNING,
+        leaseToken: job.leaseToken,
       },
       data: {
         status,
@@ -449,6 +704,15 @@ export class GenerationWorker {
         errorCode: failure.code,
         errorMessage: failure.message,
         lockedAt: null,
+        leaseToken: null,
+        providerSubmissionState:
+          failure.code === "PROVIDER_SUBMISSION_AMBIGUOUS"
+            ? ProviderSubmissionState.AMBIGUOUS
+            : retry
+              ? ProviderSubmissionState.NOT_STARTED
+              : failure.submissionState === "SUBMITTED"
+                ? ProviderSubmissionState.SUBMITTED
+                : ProviderSubmissionState.NOT_STARTED,
         finishedAt: retry ? null : new Date(),
       },
     });
@@ -460,16 +724,32 @@ export class GenerationWorker {
 function toWorkerFailure(
   error: unknown,
   providerRequestId: string | null,
+  submissionState: WorkerFailure["submissionState"],
 ): WorkerFailure {
   if (isWorkerFailure(error)) return error;
   if (error instanceof ProviderAdapterError) {
+    const ambiguous =
+      error.submissionDisposition === "MAY_HAVE_BEEN_ACCEPTED";
     return {
-      code: error.code,
-      message: error.message,
-      retryable: error.retryable,
+      code: ambiguous ? "PROVIDER_SUBMISSION_AMBIGUOUS" : error.code,
+      message: ambiguous
+        ? "Provider 可能已接受请求，禁止自动重试以避免重复计费。"
+        : error.message,
+      retryable: ambiguous ? false : error.retryable,
       providerRequestId: error.providerRequestId ?? providerRequestId,
       source: "provider",
+      submissionState: ambiguous ? "SUBMITTED" : submissionState,
     };
+  }
+
+  if (submissionState === "SUBMITTING") {
+    return workerFailure(
+      "PROVIDER_SUBMISSION_AMBIGUOUS",
+      "Provider 提交结果不明确，禁止自动重试以避免重复计费。",
+      "internal",
+      providerRequestId,
+      "SUBMITTED",
+    );
   }
 
   return workerFailure(
@@ -477,6 +757,7 @@ function toWorkerFailure(
     "图片生成任务执行失败，请重试。",
     "internal",
     providerRequestId,
+    submissionState,
   );
 }
 
@@ -485,8 +766,16 @@ function workerFailure(
   message: string,
   source: WorkerFailure["source"],
   providerRequestId: string | null = null,
+  submissionState: WorkerFailure["submissionState"] = "NOT_STARTED",
 ): WorkerFailure {
-  return { code, message, retryable: false, providerRequestId, source };
+  return {
+    code,
+    message,
+    retryable: false,
+    providerRequestId,
+    source,
+    submissionState,
+  };
 }
 
 function isWorkerFailure(error: unknown): error is WorkerFailure {
@@ -497,7 +786,8 @@ function isWorkerFailure(error: unknown): error is WorkerFailure {
     "message" in error &&
     "retryable" in error &&
     "providerRequestId" in error &&
-    "source" in error
+    "source" in error &&
+    "submissionState" in error
   );
 }
 
@@ -511,6 +801,7 @@ function logWorkerResult(input: {
   result: "succeeded" | "retrying" | "failed";
   errorCode?: string;
   failureSource?: WorkerFailure["source"];
+  originalError?: { name: string; message: string };
 }) {
   console.info(
     JSON.stringify({
@@ -528,6 +819,20 @@ function logWorkerResult(input: {
       providerRequestId: input.providerRequestId,
       errorCode: input.errorCode,
       failureSource: input.failureSource,
+      originalError: input.originalError,
     }),
   );
+}
+
+function describeUnexpectedError(error: unknown): {
+  name: string;
+  message: string;
+} {
+  if (error instanceof Error) {
+    return {
+      name: error.name.slice(0, 120),
+      message: error.message.slice(0, 500),
+    };
+  }
+  return { name: "UnknownThrownValue", message: String(error).slice(0, 500) };
 }

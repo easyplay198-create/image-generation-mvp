@@ -5,6 +5,12 @@ import Link from "next/link";
 import dynamic from "next/dynamic";
 import { useEffect, useState, type FormEvent } from "react";
 
+import BenchmarkPanel from "./benchmark-panel";
+import {
+  VISUAL_PIPELINE_CAPABILITY,
+  type BenchmarkRuntimeCapability,
+} from "@/src/vision/runtime-capability";
+
 const DesignEditor = dynamic(() => import("./design-editor"), {
   ssr: false,
   loading: () => (
@@ -67,7 +73,13 @@ type StyleSpecState = {
   latestJob: StyleAnalysisJob | null;
 };
 
-export default function ProjectWorkspace({ projectId }: { projectId: string }) {
+export default function ProjectWorkspace({
+  projectId,
+  benchmarkRuntimeCapability,
+}: {
+  projectId: string;
+  benchmarkRuntimeCapability: BenchmarkRuntimeCapability;
+}) {
   const [project, setProject] = useState<Project | null>(null);
   const [form, setForm] = useState<EditableProject | null>(null);
   const [styleSpecState, setStyleSpecState] = useState<StyleSpecState | null>(
@@ -135,11 +147,10 @@ export default function ProjectWorkspace({ projectId }: { projectId: string }) {
         const job = await fetchStyleAnalysisJob(polledJobId);
         if (cancelled) return;
 
-        setStyleSpecState((current) =>
-          current ? { ...current, latestJob: job } : current,
-        );
-
         if (isActiveJob(job)) {
+          setStyleSpecState((current) =>
+            current ? { ...current, latestJob: job } : current,
+          );
           timer = setTimeout(poll, 1_200);
           return;
         }
@@ -147,7 +158,10 @@ export default function ProjectWorkspace({ projectId }: { projectId: string }) {
         if (job.status === "SUCCEEDED") {
           const nextState = await fetchStyleSpecState(projectId);
           if (cancelled) return;
-          setStyleSpecState(nextState);
+          setStyleSpecState({
+            latestJob: job,
+            latestRevision: nextState.latestRevision,
+          });
           setStyleSpecJson(
             nextState.latestRevision
               ? JSON.stringify(nextState.latestRevision.spec, null, 2)
@@ -155,6 +169,9 @@ export default function ProjectWorkspace({ projectId }: { projectId: string }) {
           );
           setStatus("风格分析完成，StyleSpec revision 已保存。 ");
         } else {
+          setStyleSpecState((current) =>
+            current ? { ...current, latestJob: job } : current,
+          );
           setStatus(job.errorMessage ?? "风格分析任务失败。 ");
         }
       } catch (error) {
@@ -541,6 +558,32 @@ export default function ProjectWorkspace({ projectId }: { projectId: string }) {
           </div>
         )}
       </section>
+
+      <section className="panel">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Visual Pipeline capability</p>
+            <h2>Contracts / scaffolding only</h2>
+            <p className="summary">
+              Product Understanding、Visual DNA、Visual Strategy 与 Evaluation
+              当前仅提供合同、校验器和注入接口，不声明已具备端到端生产运行时。
+            </p>
+          </div>
+          <span className="count-badge">
+            {VISUAL_PIPELINE_CAPABILITY.runtimeAvailable ? "Runtime" : "No runtime"}
+          </span>
+        </div>
+      </section>
+
+      <BenchmarkPanel
+        projectId={projectId}
+        runtimeCapability={benchmarkRuntimeCapability}
+        revision={
+          styleRevision
+            ? { id: styleRevision.id, revisionNumber: styleRevision.revisionNumber }
+            : null
+        }
+      />
 
       <DesignEditor projectId={projectId} />
 

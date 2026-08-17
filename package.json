@@ -14,6 +14,7 @@
     "test:integration": "vitest run --config vitest.integration.config.ts --configLoader runner",
     "worker:style-analysis": "tsx worker/index.ts",
     "worker:generation": "tsx worker/generation-index.ts",
+    "worker:benchmark": "tsx worker/benchmark-index.ts",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate deploy",
     "db:migrate:check": "prisma migrate deploy && prisma migrate deploy"

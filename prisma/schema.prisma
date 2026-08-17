@@ -33,6 +33,26 @@ enum JobStatus {
   CANCELED
 }
 
+enum BenchmarkVariant {
+  PLAIN_PROMPT
+  STYLE_SPEC
+}
+
+enum BenchmarkJobStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+enum ProviderSubmissionState {
+  NOT_STARTED
+  SUBMITTING
+  SUBMITTED
+  AMBIGUOUS
+  COMPLETED
+}
+
 model Project {
   id                 String              @id @default(cuid())
   ownerId            String
@@ -51,6 +71,9 @@ model Project {
   generationResults  GenerationResult[]
   designVersions     DesignVersion[]
   exports            Export[]
+  benchmarkRuns      BenchmarkRun[]
+  benchmarkJobs      BenchmarkJob[]
+  benchmarkResults   BenchmarkResult[]
 
   @@index([ownerId])
 }
@@ -74,6 +97,8 @@ model Asset {
   generationResult      GenerationResult?
   designVersionPreviews DesignVersion[]   @relation("DesignVersionPreview")
   exports               Export[]
+  benchmarkProductRuns  BenchmarkRun[]    @relation("BenchmarkProductAsset")
+  benchmarkResults      BenchmarkResult[]
 
   @@index([ownerId, projectId])
   @@index([sourceAssetId])
@@ -91,34 +116,121 @@ model StyleSpecRevision {
   jobs              Job[]
   generationResults GenerationResult[]
   designVersions    DesignVersion[]
+  benchmarkRuns     BenchmarkRun[]
 
   @@unique([projectId, revisionNumber])
   @@index([ownerId, projectId])
 }
 
+model BenchmarkRun {
+  id                    String            @id @default(cuid())
+  ownerId               String
+  projectId             String
+  idempotencyKey        String
+  experimentFingerprint String
+  sku                   String
+  providerName          String
+  modelName             String
+  outputWidth           Int
+  outputHeight          Int
+  productAssetId        String
+  referenceAssetIds     String[]
+  styleSpecRevisionId   String
+  generationContextJson Json
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+  project               Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  productAsset          Asset             @relation("BenchmarkProductAsset", fields: [productAssetId], references: [id], onDelete: Restrict)
+  styleSpecRevision     StyleSpecRevision @relation(fields: [styleSpecRevisionId], references: [id], onDelete: Restrict)
+  jobs                  BenchmarkJob[]
+
+  @@unique([projectId, idempotencyKey])
+  @@unique([projectId, experimentFingerprint])
+  @@index([ownerId, projectId, createdAt])
+  @@index([productAssetId])
+  @@index([styleSpecRevisionId])
+}
+
+model BenchmarkJob {
+  id                      String                  @id @default(cuid())
+  ownerId                 String
+  projectId               String
+  benchmarkRunId          String
+  variant                 BenchmarkVariant
+  status                  BenchmarkJobStatus      @default(QUEUED)
+  inputJson               Json
+  providerName            String
+  providerRequestId       String?
+  errorCode               String?
+  errorMessage            String?
+  attemptCount            Int                     @default(0)
+  maxAttempts             Int                     @default(2)
+  lockedAt                DateTime?
+  leaseToken              String?
+  providerInvocationKey   String?                 @unique
+  providerSubmissionState ProviderSubmissionState @default(NOT_STARTED)
+  providerSubmittedAt     DateTime?
+  startedAt               DateTime?
+  finishedAt              DateTime?
+  createdAt               DateTime                @default(now())
+  updatedAt               DateTime                @updatedAt
+  project                 Project                 @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  benchmarkRun            BenchmarkRun            @relation(fields: [benchmarkRunId], references: [id], onDelete: Cascade)
+  result                  BenchmarkResult?
+
+  @@unique([benchmarkRunId, variant])
+  @@index([ownerId, projectId])
+  @@index([status, createdAt])
+  @@index([status, lockedAt])
+}
+
+model BenchmarkResult {
+  id                String       @id @default(cuid())
+  ownerId           String
+  projectId         String
+  benchmarkJobId    String       @unique
+  assetId           String       @unique
+  providerName      String
+  providerRequestId String
+  requestId         String
+  durationMs        Int
+  usageJson         Json
+  costMetadataJson  Json
+  createdAt         DateTime     @default(now())
+  project           Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  benchmarkJob      BenchmarkJob @relation(fields: [benchmarkJobId], references: [id], onDelete: Cascade)
+  asset             Asset        @relation(fields: [assetId], references: [id], onDelete: Restrict)
+
+  @@index([ownerId, projectId])
+}
+
 model Job {
-  id                  String             @id @default(cuid())
-  ownerId             String
-  projectId           String
-  type                JobType
-  status              JobStatus          @default(QUEUED)
-  idempotencyKey      String?
-  inputJson           Json               @default("{}")
-  styleSpecRevisionId String?
-  providerName        String?
-  providerRequestId   String?
-  errorCode           String?
-  errorMessage        String?
-  attemptCount        Int                @default(0)
-  maxAttempts         Int                @default(2)
-  lockedAt            DateTime?
-  startedAt           DateTime?
-  finishedAt          DateTime?
-  createdAt           DateTime           @default(now())
-  updatedAt           DateTime           @updatedAt
-  project             Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  styleSpecRevision   StyleSpecRevision? @relation(fields: [styleSpecRevisionId], references: [id], onDelete: SetNull)
-  generationResult    GenerationResult?
+  id                      String                  @id @default(cuid())
+  ownerId                 String
+  projectId               String
+  type                    JobType
+  status                  JobStatus               @default(QUEUED)
+  idempotencyKey          String?
+  inputJson               Json                    @default("{}")
+  styleSpecRevisionId     String?
+  providerName            String?
+  providerRequestId       String?
+  errorCode               String?
+  errorMessage            String?
+  attemptCount            Int                     @default(0)
+  maxAttempts             Int                     @default(2)
+  lockedAt                DateTime?
+  leaseToken              String?
+  providerInvocationKey   String?                 @unique
+  providerSubmissionState ProviderSubmissionState @default(NOT_STARTED)
+  providerSubmittedAt     DateTime?
+  startedAt               DateTime?
+  finishedAt              DateTime?
+  createdAt               DateTime                @default(now())
+  updatedAt               DateTime                @updatedAt
+  project                 Project                 @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  styleSpecRevision       StyleSpecRevision?      @relation(fields: [styleSpecRevisionId], references: [id], onDelete: SetNull)
+  generationResult        GenerationResult?
 
   @@unique([projectId, type, idempotencyKey])
   @@index([ownerId, projectId])
