@@ -358,7 +358,15 @@ export default function ProjectWorkspace({
           <h1>{project.name}</h1>
           <p className="summary">维护商品信息与原始视觉资产。</p>
         </div>
-        <span className="count-badge">参考图 {references.length}/6</span>
+        <div className="workspace-shortcuts">
+          <Link
+            className="primary-button inline-button"
+            href={`/projects/${projectId}/dashboard`}
+          >
+            进入 AI 视觉 V4
+          </Link>
+          <span className="count-badge">参考图 {references.length}/6</span>
+        </div>
       </header>
 
       <div className="two-column">
