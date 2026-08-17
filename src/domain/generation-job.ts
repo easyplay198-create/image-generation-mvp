@@ -37,21 +37,39 @@ const generationAssetSnapshotSchema = z
   })
   .strict();
 
-export const generationJobInputSchema = z
+const generationProductContextSchema = z
+  .object({
+    productName: z.string().min(1).max(200),
+    category: z.string().min(1).max(120),
+    sellingPoints: z.array(z.string().min(1).max(200)).min(1).max(5),
+    targetAudience: z.string().max(500).nullable(),
+    forbiddenClaims: z.array(z.string().min(1).max(200)).max(20),
+  })
+  .strict();
+
+const legacyGenerationJobInputSchema = z
+  .object({
+    schemaVersion: z.literal("1.0"),
+    requestId: z.string().uuid(),
+    idempotencyKey: idempotencyKeySchema,
+    styleSpecRevisionId: z.string().min(1).max(120),
+    productContext: generationProductContextSchema,
+    canvas: z
+      .object({
+        width: z.literal(1080),
+        height: z.literal(1080),
+      })
+      .strict(),
+  })
+  .strict();
+
+const currentGenerationJobInputSchema = z
   .object({
     schemaVersion: z.literal("1.1"),
     requestId: z.string().uuid(),
     idempotencyKey: idempotencyKeySchema,
     styleSpecRevisionId: z.string().min(1).max(120),
-    productContext: z
-      .object({
-        productName: z.string().min(1).max(200),
-        category: z.string().min(1).max(120),
-        sellingPoints: z.array(z.string().min(1).max(200)).min(1).max(5),
-        targetAudience: z.string().max(500).nullable(),
-        forbiddenClaims: z.array(z.string().min(1).max(200)).max(20),
-      })
-      .strict(),
+    productContext: generationProductContextSchema,
     generationContext: z
       .object({
         schemaVersion: z.literal("1.0"),
@@ -68,6 +86,11 @@ export const generationJobInputSchema = z
       .strict(),
   })
   .strict();
+
+export const generationJobInputSchema = z.discriminatedUnion("schemaVersion", [
+  legacyGenerationJobInputSchema,
+  currentGenerationJobInputSchema,
+]);
 
 export type GenerationJobInput = z.infer<typeof generationJobInputSchema>;
 

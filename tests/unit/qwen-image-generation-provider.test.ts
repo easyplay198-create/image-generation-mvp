@@ -96,9 +96,11 @@ describe("Qwen ImageGenerationProvider", () => {
       inputUnits: null,
       outputPixels: 1080 * 1080,
       costMetadata: {
-        amount: "0.0000",
-        currency: "CNY",
-        estimated: true,
+        status: "UNKNOWN",
+        amount: null,
+        currency: null,
+        estimated: false,
+        reason: "PRICING_NOT_VERIFIED",
       },
     });
 
@@ -200,16 +202,17 @@ describe("Qwen ImageGenerationProvider", () => {
     expect(content).toHaveLength(3);
     expect(content[0]?.image).toMatch(/^data:image\/png;base64,/);
     expect(content[1]?.image).toMatch(/^data:image\/png;base64,/);
-    expect(content[2]?.text).toContain("唯一可信的商品主体");
+    expect(content[2]?.text).toContain("唯一可信的商品身份与视觉事实来源");
     expect(content[2]?.text).toContain("不得复制其中的商品、文字、品牌");
-    expect(content[2]?.text).toContain("保持同一设备");
+    expect(content[2]?.text).toContain("保持同一商品");
     expect(content[2]?.text).toContain("虚构附件");
-    expect(content[2]?.text).toContain("不得出现任何文字、字母、数字");
+    expect(content[2]?.text).toContain("不得新增任何文字、数字");
     expect(content[2]?.text).toContain("medical cure");
     expect(request.parameters.n).toBe(1);
     expect(request.parameters.negative_prompt).toContain("medical cure");
     expect(JSON.stringify(request)).not.toContain("product-asset-1");
     expect(JSON.stringify(request)).not.toContain("只生成背景");
+    expect(JSON.stringify(request)).not.toContain("应急启动电源");
   });
 
   it("rejects invalid product reference metadata before calling Qwen", async () => {
