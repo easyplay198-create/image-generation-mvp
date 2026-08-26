@@ -6,10 +6,13 @@ Status: frozen for the GitHub-hosted development bootstrap.
 
 - GitHub is the sole engineering source of truth for this project.
 - The authoritative repository is `https://github.com/easyplay198-create/image-generation-mvp.git`.
-- The authoritative baseline commit is `20fa6e7b6a95ca44b77544df6ea99061bf7902c1`.
-- The new formal development root is `E:\EASY_PLAY_DEV_WORKSPACES\image-generation-mvp-github-managed-v5`.
+- Commit `20fa6e7b6a95ca44b77544df6ea99061bf7902c1` is the bootstrap lineage anchor for this hosted-development migration; it is not a permanently fixed engineering baseline.
+- The reviewed and merged `origin/main` in the GitHub repository is the sole continuously updated authoritative engineering state.
+- After each change proceeds through an Issue, a task branch, CI, pull request review, and human merge, the authoritative engineering state advances with `origin/main`.
+- `E:\EASY_PLAY_DEV_WORKSPACES\image-generation-mvp-github-managed-v5` is only the current managed Windows working copy; it is not a cross-environment source of truth.
+- Codex Cloud and GitHub Actions use temporary or isolated checkouts created from GitHub and do not depend on the Windows `E:` path.
 
-Changes intended for formal development must originate from this GitHub baseline and proceed through an Issue, a task branch, CI, and pull request review.
+Changes intended for formal development must originate from the current authoritative `origin/main` and proceed through an Issue, a task branch, CI, pull request review, and human merge.
 
 ## Historical evidence boundary
 
@@ -26,4 +29,4 @@ Generated artifacts, browser sessions or profiles, real credentials, and unsanit
 
 ## Gate boundary
 
-This governance pull request establishes the hosted-development baseline only. It does not represent completion of V5 product engineering and does not release Gate 0B.
+This governance pull request establishes the hosted-development bootstrap only. It does not establish or release Gate 0B, and it does not establish completion of V5 product engineering.
