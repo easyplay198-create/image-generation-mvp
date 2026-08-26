@@ -39,6 +39,8 @@ import { GenerationWorker } from "@/worker/generation-worker";
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) throw new Error("DATABASE_URL is required for integration tests.");
 
+const TIMEZONE_TEST_LEASE_TIMEOUT_MS = 5 * 60 * 1_000;
+
 const HISTORICAL_MIGRATIONS = [
   "20260809152000_init",
   "20260809160000_asset_dimensions_required",
@@ -494,11 +496,12 @@ describe("PKG-AB P1 worker recovery and deduplication", () => {
           WHERE "id" = ${freshBenchmark.id}
         `;
 
+        // This case verifies timezone semantics and must not depend on 100 ms execution timing.
         const generationWorker = new GenerationWorker(
           zonedDatabase,
           storage,
           new MockImageGenerationProvider(),
-          100,
+          TIMEZONE_TEST_LEASE_TIMEOUT_MS,
           0,
         );
         const benchmarkWorker = new BenchmarkWorker(
@@ -506,7 +509,7 @@ describe("PKG-AB P1 worker recovery and deduplication", () => {
           storage,
           qwenStyleProvider,
           new SuccessfulPlainProvider(productPng),
-          100,
+          TIMEZONE_TEST_LEASE_TIMEOUT_MS,
         );
         await expect(generationWorker.recoverExpiredJobs()).resolves.toBe(3);
         await expect(benchmarkWorker.recoverExpiredJobs()).resolves.toBe(3);
