@@ -1,0 +1,95 @@
+name: Codex development task
+description: Define an evidence-bounded development task for a single Issue and pull request.
+title: "[Codex] "
+labels: []
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Define the task boundary before implementation. Do not include credentials, secret values, or unsanitized user data.
+
+  - type: textarea
+    id: business_objective
+    attributes:
+      label: Business objective
+      description: State the user or business outcome without prescribing unrelated implementation work.
+      placeholder: Describe the outcome this task must deliver.
+    validations:
+      required: true
+
+  - type: textarea
+    id: allowed_paths
+    attributes:
+      label: Allowed modification paths
+      description: List the exact files or directories that may be changed.
+      placeholder: One path or path pattern per line.
+    validations:
+      required: true
+
+  - type: textarea
+    id: prohibitions
+    attributes:
+      label: Prohibited actions and out-of-scope work
+      description: Identify files, systems, migrations, refactors, or external actions that are forbidden.
+      placeholder: List explicit boundaries and non-goals.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance criteria
+      description: Provide observable, testable completion criteria.
+      placeholder: Use a checklist where practical.
+    validations:
+      required: true
+
+  - type: textarea
+    id: test_commands
+    attributes:
+      label: Required test commands
+      description: List the exact commands and any required isolated services.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: credential_data_boundary
+    attributes:
+      label: Credential and data boundary
+      description: Specify permitted mocks or CI-only dummy values and any data that must not be accessed or emitted.
+      placeholder: No secret values. Describe the boundary only.
+    validations:
+      required: true
+
+  - type: textarea
+    id: dependencies_blockers
+    attributes:
+      label: Dependencies and blockers
+      description: Identify prerequisite Issues, services, approvals, decisions, or known blockers.
+      placeholder: Write "None known" when applicable.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: ui_screenshot_requirement
+    attributes:
+      label: UI task screenshot requirement
+      description: Select the screenshot evidence required for this task.
+      options:
+        - Not a UI task
+        - Before and after screenshots are required
+        - After screenshots are required
+        - Screenshot requirement is blocked and explained below
+    validations:
+      required: true
+
+  - type: textarea
+    id: ui_screenshot_plan
+    attributes:
+      label: UI screenshot plan or exception
+      description: For UI work, list the states, routes, and viewport sizes to capture. Explain any approved exception.
+      placeholder: Not applicable, or the exact screenshot plan and locations.
+    validations:
+      required: true
