@@ -713,19 +713,47 @@ test('failed CI is observer-only and lifecycle changes always require a human', 
     holdReason(makeSnapshot({ ciConclusion: 'failure' })),
     /OBSERVER_ONLY_AUTO_FIX_DISABLED/u,
   );
-  assert.match(
-    holdReason(makeSnapshot({ allowedPaths: ['package.json'], ciConclusion: 'failure' })),
-    /LIFECYCLE_CHANGE_REQUIRES_HUMAN/u,
-  );
-  assert.match(
-    holdReason(makeSnapshot({ allowedPaths: ['package.json'], ciConclusion: 'success' })),
-    /LIFECYCLE_CHANGE_REQUIRES_HUMAN/u,
-  );
-  for (const path of ['apps/web/package.json', 'packages/core/package-lock.json']) {
+  for (const ciConclusion of ['failure', 'success']) {
+    for (const path of ['package.json', 'bun.lock', 'bun.lockb']) {
+      assert.match(
+        holdReason(makeSnapshot({ allowedPaths: [path], ciConclusion })),
+        /LIFECYCLE_CHANGE_REQUIRES_HUMAN/u,
+      );
+    }
+  }
+  for (const path of [
+    'apps/web/package.json',
+    'packages/core/package-lock.json',
+    'apps/web/bun.lock',
+    'packages/core/bun.lockb',
+  ]) {
     assert.match(
       holdReason(makeSnapshot({ allowedPaths: [path], ciConclusion: 'success' })),
       /LIFECYCLE_CHANGE_REQUIRES_HUMAN/u,
     );
+  }
+
+  for (const [previousFilename, filename] of [
+    ['apps/web/source.txt', 'apps/web/bun.lock'],
+    ['packages/core/bun.lockb', 'packages/core/archive.txt'],
+  ]) {
+    assert.match(
+      holdReason(makeSnapshot({
+        allowedPaths: [previousFilename, filename],
+        changedFiles: [{
+          filename,
+          previousFilename,
+          status: 'renamed',
+          mode: '100644',
+          previousMode: '100644',
+        }],
+      })),
+      /LIFECYCLE_CHANGE_REQUIRES_HUMAN/u,
+    );
+  }
+
+  for (const path of ['bun.lock.backup', 'package.json.example']) {
+    assert.equal(evaluateControlSnapshot(makeSnapshot({ allowedPaths: [path] })).result, 'PASS');
   }
 });
 

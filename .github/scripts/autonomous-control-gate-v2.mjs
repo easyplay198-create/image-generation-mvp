@@ -32,6 +32,8 @@ const TERMINAL_CI_CONCLUSIONS = new Set(['success', 'failure']);
 const FILE_MODES = new Set(['100644', '100755', '120000', '160000']);
 const PROTECTED_PATHS = ['AGENTS.md', 'CODEOWNERS', '.github/', 'docs/governance/'];
 const LIFECYCLE_PATHS = new Set([
+  'bun.lock',
+  'bun.lockb',
   'package.json',
   'package-lock.json',
   'npm-shrinkwrap.json',
