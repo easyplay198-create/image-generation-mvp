@@ -9,6 +9,7 @@ import {
   formatResultLines,
   isCanonicalRepositoryPath,
   latestCi,
+  normalizeEvent,
   resolvePrNumber,
   sha256Text,
 } from './autonomous-control-gate-v2.mjs';
@@ -81,6 +82,7 @@ function makeSnapshot({
       workflowId: POLICY.qualityWorkflowId,
       workflowName: POLICY.qualityWorkflowName,
       headSha: HEAD_SHA,
+      runAttempt: eventType === 'workflow_run' ? 1 : null,
       actor: { id: 123, login: 'contributor', type: 'User' },
       authorAssociation: 'CONTRIBUTOR',
     },
@@ -304,6 +306,27 @@ test('rejects a stale workflow head', () => {
   assert.match(holdReason(snapshot), /TRIGGER_HEAD_STALE/u);
 });
 
+test('binds a workflow-run trigger to the exact positive run attempt', () => {
+  const mismatched = makeSnapshot();
+  mismatched.event.runAttempt = 2;
+  assert.match(holdReason(mismatched), /TRIGGER_CI_RUN_ATTEMPT_MISMATCH/u);
+
+  for (const invalidAttempt of [null, 0, '1']) {
+    const invalid = makeSnapshot();
+    invalid.event.runAttempt = invalidAttempt;
+    assert.match(holdReason(invalid), /TRIGGER_RUN_ATTEMPT_INVALID/u);
+  }
+
+  const rerun = makeSnapshot();
+  rerun.event.runAttempt = 2;
+  rerun.ci.runAttempt = 2;
+  rerun.ci.jobs[0].runAttempt = 2;
+  assert.equal(evaluateControlSnapshot(rerun).result, 'PASS');
+
+  rerun.ci.jobs[0].runAttempt = 1;
+  assert.match(holdReason(rerun), /QUALITY_JOB_BINDING_OR_CONCLUSION_MISMATCH/u);
+});
+
 test('rejects multiple open PRs for one head branch across bases', () => {
   const snapshot = makeSnapshot();
   snapshot.relatedPullRequests.push({ number: 20 });
@@ -448,6 +471,13 @@ test('rejects CI created before the current owner approval', () => {
   assert.match(holdReason(snapshot), /CI_PREDATES_CURRENT_APPROVAL/u);
 });
 
+test('rejects ambiguous equal CI and owner-approval timestamps', () => {
+  const snapshot = makeSnapshot();
+  snapshot.issueComments[0].createdAt = CI_CREATED_AT;
+  snapshot.issueComments[0].updatedAt = CI_CREATED_AT;
+  assert.match(holdReason(snapshot), /CI_APPROVAL_TIMESTAMP_ORDER_AMBIGUOUS/u);
+});
+
 test('rejects CI invalidated by later PR base, close/reopen, or ref events', () => {
   for (const event of ['base_ref_changed', 'reopened', 'head_ref_force_pushed']) {
     const snapshot = makeSnapshot();
@@ -457,6 +487,19 @@ test('rejects CI invalidated by later PR base, close/reopen, or ref events', () 
   const historical = makeSnapshot();
   historical.prTimeline.push({ event: 'base_ref_changed', createdAt: '2026-08-27T23:59:59Z' });
   assert.equal(evaluateControlSnapshot(historical).result, 'PASS');
+});
+
+test('permanently rejects any ready or convert-to-draft lifecycle history', () => {
+  for (const event of ['ready_for_review', 'convert_to_draft']) {
+    for (const createdAt of ['2026-08-28T00:00:30Z', CI_CREATED_AT, '2026-08-28T00:02:00Z']) {
+      const snapshot = makeSnapshot();
+      snapshot.prTimeline.push({ event, createdAt });
+      assert.match(
+        holdReason(snapshot),
+        new RegExp(`PR_DRAFT_LIFECYCLE_HISTORY_INVALID:${event}`, 'u'),
+      );
+    }
+  }
 });
 
 test('accepts an API-omitted Check Suite PR list', () => {
@@ -578,6 +621,7 @@ test('resolves workflow-run PR from a unique head across all bases', async () =>
       event: 'pull_request',
       head_sha: HEAD_SHA,
       head_branch: 'issue-18-test',
+      run_attempt: 1,
       pull_requests: [],
     },
   });
@@ -594,13 +638,52 @@ test('PR resolution fails closed on multiple open PRs', async () => {
         event: 'pull_request',
         head_sha: HEAD_SHA,
         head_branch: 'issue-18-test',
+        run_attempt: 1,
       },
     }),
     /TRIGGER_PR_COUNT_2/u,
   );
 });
 
-function ciApiFixture({ totalCount = 1, suitePrNumber = null } = {}) {
+test('workflow-run normalization preserves the exact run attempt', () => {
+  const normalized = normalizeEvent('workflow_run', {
+    workflow_run: {
+      id: 8001,
+      workflow_id: POLICY.qualityWorkflowId,
+      name: POLICY.qualityWorkflowName,
+      head_sha: HEAD_SHA,
+      run_attempt: 2,
+    },
+    sender: { id: 123, login: 'contributor', type: 'User' },
+  });
+  assert.equal(normalized.runAttempt, 2);
+});
+
+test('workflow-run PR resolution rejects missing or invalid run attempts before API access', async () => {
+  const api = { async list() { assert.fail('API must not be called'); } };
+  for (const runAttempt of [undefined, 0, '1']) {
+    await assert.rejects(
+      resolvePrNumber(api, '/repos/example/repo', 'workflow_run', {
+        workflow_run: {
+          workflow_id: POLICY.qualityWorkflowId,
+          name: POLICY.qualityWorkflowName,
+          event: 'pull_request',
+          head_sha: HEAD_SHA,
+          head_branch: 'issue-18-test',
+          run_attempt: runAttempt,
+        },
+      }),
+      /TRIGGER_WORKFLOW_SOURCE_INVALID/u,
+    );
+  }
+});
+
+function ciApiFixture({
+  totalCount = 1,
+  suitePrNumber = null,
+  runAttempt = 1,
+  jobRunAttempt = runAttempt,
+} = {}) {
   const run = {
     id: 8001,
     workflow_id: POLICY.qualityWorkflowId,
@@ -616,7 +699,7 @@ function ciApiFixture({ totalCount = 1, suitePrNumber = null } = {}) {
     status: 'completed',
     conclusion: 'success',
     check_suite_id: 8101,
-    run_attempt: 1,
+    run_attempt: runAttempt,
   };
   return {
     async request(path) {
@@ -631,7 +714,7 @@ function ciApiFixture({ totalCount = 1, suitePrNumber = null } = {}) {
           conclusion: 'success',
           head_sha: HEAD_SHA,
           run_id: 8001,
-          run_attempt: 1,
+          run_attempt: jobRunAttempt,
         }] } };
       }
       if (path.includes('/check-suites/8101')) {
@@ -688,6 +771,18 @@ test('latest CI fails closed on truncated run list', async () => {
       head: { ref: 'issue-18-test', sha: HEAD_SHA, repoId: POLICY.repositoryId },
     }),
     /CI_RUNS_PAGINATION_OR_COUNT_MISMATCH/u,
+  );
+});
+
+test('latest CI rejects a non-positive run attempt', async () => {
+  await assert.rejects(
+    latestCi(ciApiFixture({ runAttempt: 0 }), '/repos/example/repo', {
+      number: 19,
+      createdAt: PR_CREATED_AT,
+      base: { ref: 'main', sha: BASE_SHA, repoId: POLICY.repositoryId },
+      head: { ref: 'issue-18-test', sha: HEAD_SHA, repoId: POLICY.repositoryId },
+    }),
+    /CI_RUN_IDENTITY_SHAPE_INVALID/u,
   );
 });
 

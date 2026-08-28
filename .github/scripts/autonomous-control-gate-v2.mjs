@@ -33,7 +33,12 @@ const LIFECYCLE_PATHS = new Set([
   'pnpm-lock.yaml',
   'yarn.lock',
 ]);
+const PERMANENT_PR_LIFECYCLE_HOLD_EVENTS = new Set([
+  'convert_to_draft',
+  'ready_for_review',
+]);
 const CI_INVALIDATING_PR_EVENTS = new Set([
+  ...PERMANENT_PR_LIFECYCLE_HOLD_EVENTS,
   'automatic_base_change_succeeded',
   'base_ref_changed',
   'base_ref_deleted',
@@ -459,6 +464,12 @@ function validateTrigger(snapshot) {
     }
     if (event.headSha !== snapshot.pr.head.sha) throw new Error('TRIGGER_HEAD_STALE');
     if (String(snapshot.ci?.id) !== event.triggerId) throw new Error('TRIGGER_CI_RUN_MISMATCH');
+    if (!Number.isInteger(event.runAttempt) || event.runAttempt < 1) {
+      throw new Error('TRIGGER_RUN_ATTEMPT_INVALID');
+    }
+    if (snapshot.ci?.runAttempt !== event.runAttempt) {
+      throw new Error('TRIGGER_CI_RUN_ATTEMPT_MISMATCH');
+    }
     return;
   }
   if (event.type === 'issue_comment') {
@@ -472,6 +483,9 @@ function validateTrigger(snapshot) {
 function validateCi(ci, pr, approvalCreatedAt) {
   if (!ci || ci.workflowId !== POLICY.qualityWorkflowId || ci.workflowName !== POLICY.qualityWorkflowName) {
     throw new Error('CI_WORKFLOW_IDENTITY_INVALID');
+  }
+  if (!Number.isInteger(ci.runAttempt) || ci.runAttempt < 1) {
+    throw new Error('CI_RUN_ATTEMPT_INVALID');
   }
   if (ci.workflowPath !== POLICY.qualityWorkflowPath || ci.event !== 'pull_request') {
     throw new Error('CI_WORKFLOW_SOURCE_INVALID');
@@ -497,6 +511,9 @@ function validateCi(ci, pr, approvalCreatedAt) {
   }
   if (ciCreatedAt < prCreatedAt) throw new Error('CI_PREDATES_CURRENT_PR');
   if (ciCreatedAt < approvalCreatedAtMs) throw new Error('CI_PREDATES_CURRENT_APPROVAL');
+  if (ciCreatedAt === approvalCreatedAtMs) {
+    throw new Error('CI_APPROVAL_TIMESTAMP_ORDER_AMBIGUOUS');
+  }
   if (ci.status !== 'completed' || !TERMINAL_CI_CONCLUSIONS.has(ci.conclusion)) {
     throw new Error(`CI_NOT_ACCEPTED_TERMINAL_STATE:${ci.conclusion ?? ci.status}`);
   }
@@ -547,6 +564,9 @@ function validatePrTimeline(prTimeline, ci) {
     if (!CI_INVALIDATING_PR_EVENTS.has(item.event)) continue;
     const eventCreatedAt = Date.parse(item.createdAt);
     if (!Number.isFinite(eventCreatedAt)) throw new Error('PR_TIMELINE_TIMESTAMP_INVALID');
+    if (PERMANENT_PR_LIFECYCLE_HOLD_EVENTS.has(item.event)) {
+      throw new Error(`PR_DRAFT_LIFECYCLE_HISTORY_INVALID:${item.event}`);
+    }
     if (eventCreatedAt >= ciCreatedAt) {
       throw new Error(`CI_INVALIDATED_BY_PR_TIMELINE:${item.event}`);
     }
@@ -687,7 +707,9 @@ export async function resolvePrNumber(api, repositoryPath, eventName, event) {
       event.workflow_run?.name !== POLICY.qualityWorkflowName ||
       event.workflow_run?.event !== 'pull_request' ||
       !isCommitSha(event.workflow_run?.head_sha) ||
-      typeof event.workflow_run?.head_branch !== 'string'
+      typeof event.workflow_run?.head_branch !== 'string' ||
+      !Number.isInteger(event.workflow_run?.run_attempt) ||
+      event.workflow_run.run_attempt < 1
     ) {
       throw new Error('TRIGGER_WORKFLOW_SOURCE_INVALID');
     }
@@ -712,7 +734,7 @@ export async function resolvePrNumber(api, repositoryPath, eventName, event) {
   throw new Error(`EVENT_UNSUPPORTED:${eventName}`);
 }
 
-function normalizeEvent(eventName, event) {
+export function normalizeEvent(eventName, event) {
   if (eventName === 'workflow_run') {
     return {
       type: eventName,
@@ -720,6 +742,7 @@ function normalizeEvent(eventName, event) {
       workflowId: event.workflow_run.workflow_id,
       workflowName: event.workflow_run.name,
       headSha: event.workflow_run.head_sha,
+      runAttempt: event.workflow_run.run_attempt,
       actor: normalizeUser(event.sender),
       authorAssociation: null,
     };
@@ -731,6 +754,7 @@ function normalizeEvent(eventName, event) {
       workflowId: null,
       workflowName: null,
       headSha: null,
+      runAttempt: null,
       actor: normalizeUser(event.sender),
       authorAssociation: event.comment.author_association,
       command: event.comment.body.trim(),
@@ -779,7 +803,10 @@ export async function latestCi(api, repositoryPath, pr) {
   if (eligible.length === 0) return null;
   eligible.sort((a, b) => b.id - a.id);
   const run = eligible[0];
-  if (!Number.isInteger(run.check_suite_id) || !Number.isInteger(run.run_attempt)) {
+  if (
+    !Number.isInteger(run.check_suite_id) ||
+    !Number.isInteger(run.run_attempt) || run.run_attempt < 1
+  ) {
     throw new Error('CI_RUN_IDENTITY_SHAPE_INVALID');
   }
   const [{ data: jobsData }, { data: suite }] = await Promise.all([
