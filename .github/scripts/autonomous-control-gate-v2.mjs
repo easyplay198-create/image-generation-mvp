@@ -179,6 +179,11 @@ function isCommitSha(value) {
   return typeof value === 'string' && /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u.test(value);
 }
 
+function expectedCiRunName(pr) {
+  return `${POLICY.qualityWorkflowName} pull_request PR-${pr.number} ` +
+    `base-${pr.base.sha} head-${pr.head.sha}`;
+}
+
 export function isCanonicalRepositoryPath(value) {
   if (typeof value !== 'string' || value.length === 0 || value.length > 1024) return false;
   if (value !== value.normalize('NFC')) return false;
@@ -522,11 +527,34 @@ function validatePr(pr, relatedPullRequests, contract) {
 function validateTrigger(snapshot) {
   const event = snapshot.event;
   if (event.type === 'workflow_run') {
-    if (event.workflowId !== POLICY.qualityWorkflowId || event.workflowName !== POLICY.qualityWorkflowName) {
+    if (
+      event.workflowId !== POLICY.qualityWorkflowId ||
+      event.workflowPath !== POLICY.qualityWorkflowPath ||
+      event.workflowEvent !== 'pull_request'
+    ) {
       throw new Error('TRIGGER_WORKFLOW_IDENTITY_INVALID');
     }
-    if (event.headSha !== snapshot.pr.head.sha) throw new Error('TRIGGER_HEAD_STALE');
+    const expectedRunName = expectedCiRunName(snapshot.pr);
+    if (event.runName !== expectedRunName || event.displayTitle !== expectedRunName) {
+      throw new Error('TRIGGER_RUN_NAME_BINDING_INVALID');
+    }
+    if (
+      event.headSha !== snapshot.pr.head.sha ||
+      event.headBranch !== snapshot.pr.head.ref
+    ) {
+      throw new Error('TRIGGER_HEAD_STALE');
+    }
     if (String(snapshot.ci?.id) !== event.triggerId) throw new Error('TRIGGER_CI_RUN_MISMATCH');
+    if (
+      snapshot.ci?.workflowId !== event.workflowId ||
+      snapshot.ci?.runPath !== event.workflowPath ||
+      snapshot.ci?.event !== event.workflowEvent ||
+      snapshot.ci?.runName !== event.runName ||
+      snapshot.ci?.displayTitle !== event.displayTitle ||
+      snapshot.ci?.headBranch !== event.headBranch
+    ) {
+      throw new Error('TRIGGER_CI_IDENTITY_MISMATCH');
+    }
     if (!Number.isInteger(event.runAttempt) || event.runAttempt < 1) {
       throw new Error('TRIGGER_RUN_ATTEMPT_INVALID');
     }
@@ -544,18 +572,25 @@ function validateTrigger(snapshot) {
 }
 
 function validateCi(ci, pr, approvalCreatedAt) {
-  if (!ci || ci.workflowId !== POLICY.qualityWorkflowId || ci.workflowName !== POLICY.qualityWorkflowName) {
+  if (
+    !ci ||
+    ci.workflowId !== POLICY.qualityWorkflowId ||
+    ci.workflowName !== POLICY.qualityWorkflowName ||
+    ci.workflowPath !== POLICY.qualityWorkflowPath ||
+    ci.workflowState !== 'active'
+  ) {
     throw new Error('CI_WORKFLOW_IDENTITY_INVALID');
   }
   if (!Number.isInteger(ci.runAttempt) || ci.runAttempt < 1) {
     throw new Error('CI_RUN_ATTEMPT_INVALID');
   }
-  if (ci.workflowPath !== POLICY.qualityWorkflowPath || ci.event !== 'pull_request') {
+  if (ci.runPath !== POLICY.qualityWorkflowPath || ci.event !== 'pull_request') {
     throw new Error('CI_WORKFLOW_SOURCE_INVALID');
   }
-  const expectedDisplayTitle =
-    `CI pull_request PR-${pr.number} base-${pr.base.sha} head-${pr.head.sha}`;
-  if (ci.displayTitle !== expectedDisplayTitle) throw new Error('CI_RUN_NAME_BINDING_INVALID');
+  const expectedRunName = expectedCiRunName(pr);
+  if (ci.runName !== expectedRunName || ci.displayTitle !== expectedRunName) {
+    throw new Error('CI_RUN_NAME_BINDING_INVALID');
+  }
   if (ci.headSha !== pr.head.sha) throw new Error('CI_HEAD_STALE');
   if (
     ci.headBranch !== pr.head.ref || ci.repositoryId !== POLICY.repositoryId ||
@@ -780,11 +815,14 @@ function createApi(token, baseUrl) {
 export async function resolvePrNumber(api, repositoryPath, eventName, event) {
   if (eventName === 'workflow_run') {
     if (
+      !Number.isInteger(event.workflow_run?.id) ||
+      event.workflow_run.id < 1 ||
       event.workflow_run?.workflow_id !== POLICY.qualityWorkflowId ||
-      event.workflow_run?.name !== POLICY.qualityWorkflowName ||
+      event.workflow_run?.path !== POLICY.qualityWorkflowPath ||
       event.workflow_run?.event !== 'pull_request' ||
       !isCommitSha(event.workflow_run?.head_sha) ||
       typeof event.workflow_run?.head_branch !== 'string' ||
+      event.workflow_run.head_branch.length === 0 ||
       !Number.isInteger(event.workflow_run?.run_attempt) ||
       event.workflow_run.run_attempt < 1
     ) {
@@ -796,11 +834,23 @@ export async function resolvePrNumber(api, repositoryPath, eventName, event) {
     if (candidates.length !== 1) throw new Error(`TRIGGER_PR_COUNT_${candidates.length}`);
     const candidate = candidates[0];
     if (
+      !Number.isInteger(candidate.number) ||
+      candidate.number < 1 ||
       candidate.head?.sha !== event.workflow_run.head_sha ||
+      candidate.head?.ref !== event.workflow_run.head_branch ||
       candidate.head?.repo?.id !== POLICY.repositoryId ||
-      candidate.base?.repo?.id !== POLICY.repositoryId
+      candidate.base?.repo?.id !== POLICY.repositoryId ||
+      candidate.base?.ref !== POLICY.defaultBranch ||
+      !isCommitSha(candidate.base?.sha)
     ) {
       throw new Error('TRIGGER_PR_IDENTITY_MISMATCH');
+    }
+    const expectedRunName = expectedCiRunName(candidate);
+    if (
+      event.workflow_run.name !== expectedRunName ||
+      event.workflow_run.display_title !== expectedRunName
+    ) {
+      throw new Error('TRIGGER_RUN_NAME_BINDING_INVALID');
     }
     return candidate.number;
   }
@@ -817,8 +867,12 @@ export function normalizeEvent(eventName, event) {
       type: eventName,
       triggerId: String(event.workflow_run.id),
       workflowId: event.workflow_run.workflow_id,
-      workflowName: event.workflow_run.name,
+      workflowPath: event.workflow_run.path,
+      workflowEvent: event.workflow_run.event,
+      runName: event.workflow_run.name,
+      displayTitle: event.workflow_run.display_title,
       headSha: event.workflow_run.head_sha,
+      headBranch: event.workflow_run.head_branch,
       runAttempt: event.workflow_run.run_attempt,
       actor: normalizeUser(event.sender),
       authorAssociation: null,
@@ -829,8 +883,12 @@ export function normalizeEvent(eventName, event) {
       type: eventName,
       triggerId: String(event.comment.id),
       workflowId: null,
-      workflowName: null,
+      workflowPath: null,
+      workflowEvent: null,
+      runName: null,
+      displayTitle: null,
       headSha: null,
+      headBranch: null,
       runAttempt: null,
       actor: normalizeUser(event.sender),
       authorAssociation: event.comment.author_association,
@@ -857,9 +915,20 @@ function normalizeSuitePullRequest(candidate) {
 }
 
 export async function latestCi(api, repositoryPath, pr) {
-  const { data } = await api.request(
-    `${repositoryPath}/actions/workflows/ci.yml/runs?event=pull_request&head_sha=${pr.head.sha}&per_page=100`,
-  );
+  const [{ data }, { data: workflow }] = await Promise.all([
+    api.request(
+      `${repositoryPath}/actions/workflows/ci.yml/runs?event=pull_request&head_sha=${pr.head.sha}&per_page=100`,
+    ),
+    api.request(`${repositoryPath}/actions/workflows/${POLICY.qualityWorkflowId}`),
+  ]);
+  if (
+    workflow?.id !== POLICY.qualityWorkflowId ||
+    workflow?.name !== POLICY.qualityWorkflowName ||
+    workflow?.path !== POLICY.qualityWorkflowPath ||
+    workflow?.state !== 'active'
+  ) {
+    throw new Error('CI_WORKFLOW_DEFINITION_INVALID');
+  }
   if (!Array.isArray(data.workflow_runs) || !Number.isInteger(data.total_count)) {
     throw new Error('CI_RUNS_RESPONSE_SHAPE_INVALID');
   }
@@ -868,7 +937,6 @@ export async function latestCi(api, repositoryPath, pr) {
   }
   const eligible = data.workflow_runs.filter((run) =>
     run.workflow_id === POLICY.qualityWorkflowId &&
-    run.name === POLICY.qualityWorkflowName &&
     run.path === POLICY.qualityWorkflowPath &&
     run.event === 'pull_request' &&
     run.head_sha === pr.head.sha &&
@@ -878,6 +946,12 @@ export async function latestCi(api, repositoryPath, pr) {
     Date.parse(run.created_at) >= Date.parse(pr.createdAt),
   );
   if (eligible.length === 0) return null;
+  const expectedRunName = expectedCiRunName(pr);
+  if (eligible.some((run) =>
+    run.name !== expectedRunName || run.display_title !== expectedRunName
+  )) {
+    throw new Error('CI_RUN_NAME_BINDING_INVALID');
+  }
   eligible.sort((a, b) => b.id - a.id);
   const run = eligible[0];
   if (
@@ -900,9 +974,12 @@ export async function latestCi(api, repositoryPath, pr) {
   return {
     id: run.id,
     workflowId: run.workflow_id,
-    workflowName: run.name,
+    workflowName: workflow.name,
+    workflowPath: workflow.path,
+    workflowState: workflow.state,
+    runName: run.name,
+    runPath: run.path,
     displayTitle: run.display_title,
-    workflowPath: run.path,
     event: run.event,
     headSha: run.head_sha,
     headBranch: run.head_branch,

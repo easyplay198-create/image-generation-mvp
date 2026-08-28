@@ -19,6 +19,7 @@ const BASE_SHA = 'f6a55979dd37aba84e66d19c947b6be572c9973c';
 const HEAD_SHA = '1111111111111111111111111111111111111111';
 const PR_CREATED_AT = '2026-08-28T00:00:00Z';
 const CI_CREATED_AT = '2026-08-28T00:01:00Z';
+const CI_RUN_NAME = `CI pull_request PR-19 base-${BASE_SHA} head-${HEAD_SHA}`;
 
 function marker(name, value) {
   return `<!-- ${name}_BEGIN\n${JSON.stringify(value)}\n${name}_END -->`;
@@ -92,8 +93,12 @@ function makeSnapshot({
       type: eventType,
       triggerId: eventType === 'workflow_run' ? '8001' : '7001',
       workflowId: POLICY.qualityWorkflowId,
-      workflowName: POLICY.qualityWorkflowName,
+      workflowPath: POLICY.qualityWorkflowPath,
+      workflowEvent: 'pull_request',
+      runName: CI_RUN_NAME,
+      displayTitle: CI_RUN_NAME,
       headSha: HEAD_SHA,
+      headBranch: head.ref,
       runAttempt: eventType === 'workflow_run' ? 1 : null,
       actor: { id: 123, login: 'contributor', type: 'User' },
       authorAssociation: 'CONTRIBUTOR',
@@ -139,8 +144,11 @@ function makeSnapshot({
       id: 8001,
       workflowId: POLICY.qualityWorkflowId,
       workflowName: POLICY.qualityWorkflowName,
-      displayTitle: `CI pull_request PR-19 base-${BASE_SHA} head-${HEAD_SHA}`,
       workflowPath: POLICY.qualityWorkflowPath,
+      workflowState: 'active',
+      runName: CI_RUN_NAME,
+      runPath: POLICY.qualityWorkflowPath,
+      displayTitle: CI_RUN_NAME,
       event: 'pull_request',
       headSha: HEAD_SHA,
       headBranch: head.ref,
@@ -175,6 +183,14 @@ function makeSnapshot({
       }],
     },
   };
+}
+
+function makeReconcileSnapshot(options = {}) {
+  const snapshot = makeSnapshot({ ...options, eventType: 'issue_comment' });
+  snapshot.event.actor = owner();
+  snapshot.event.authorAssociation = 'OWNER';
+  snapshot.event.command = 'CONTROL_PLANE_V2_RECONCILE';
+  return snapshot;
 }
 
 function holdReason(snapshot) {
@@ -408,6 +424,27 @@ test('rejects a stale workflow head', () => {
   assert.match(holdReason(snapshot), /TRIGGER_HEAD_STALE/u);
 });
 
+test('binds workflow-run trigger source and dynamic title to the selected CI run', () => {
+  for (const mutate of [
+    (snapshot) => { snapshot.event.workflowPath = '.github/workflows/other.yml'; },
+    (snapshot) => { snapshot.event.workflowEvent = 'push'; },
+    (snapshot) => { snapshot.event.runName = `${CI_RUN_NAME} `; },
+    (snapshot) => { snapshot.event.displayTitle = `${CI_RUN_NAME} `; },
+    (snapshot) => { snapshot.event.headBranch = 'other'; },
+  ]) {
+    const snapshot = makeSnapshot();
+    mutate(snapshot);
+    assert.match(
+      holdReason(snapshot),
+      /TRIGGER_WORKFLOW_IDENTITY_INVALID|TRIGGER_RUN_NAME_BINDING_INVALID|TRIGGER_HEAD_STALE/u,
+    );
+  }
+
+  const mismatched = makeSnapshot();
+  mismatched.ci.runName = `${CI_RUN_NAME} `;
+  assert.match(holdReason(mismatched), /TRIGGER_CI_IDENTITY_MISMATCH/u);
+});
+
 test('binds a workflow-run trigger to the exact positive run attempt', () => {
   const mismatched = makeSnapshot();
   mismatched.event.runAttempt = 2;
@@ -576,30 +613,32 @@ test('requires GraphQL proof that repository auto-merge is disabled', () => {
 });
 
 test('rejects a stale CI run, wrong workflow, and wrong job', () => {
-  const stale = makeSnapshot();
+  const stale = makeReconcileSnapshot();
   stale.ci.headSha = '4'.repeat(40);
   assert.match(holdReason(stale), /CI_HEAD_STALE/u);
-  const workflow = makeSnapshot();
+  const workflow = makeReconcileSnapshot();
   workflow.ci.workflowId += 1;
   assert.match(holdReason(workflow), /CI_WORKFLOW_IDENTITY_INVALID/u);
-  const job = makeSnapshot();
+  const job = makeReconcileSnapshot();
   job.ci.jobs[0].name = 'Quality gate';
   assert.match(holdReason(job), /QUALITY_JOB_IDENTITY_OR_STATUS_INVALID/u);
 });
 
 test('rejects CI from another branch or repository and CI predating PR', () => {
-  const branch = makeSnapshot();
+  const branch = makeReconcileSnapshot();
   branch.ci.headBranch = 'other';
   assert.match(holdReason(branch), /CI_PR_IDENTITY_MISMATCH/u);
-  const old = makeSnapshot();
+  const old = makeReconcileSnapshot();
   old.ci.createdAt = '2026-08-27T23:59:59Z';
   assert.match(holdReason(old), /CI_PREDATES_CURRENT_PR/u);
 });
 
 test('rejects CI whose deterministic run name does not bind the current PR, base, and head', () => {
-  const snapshot = makeSnapshot();
-  snapshot.ci.displayTitle = `CI pull_request PR-20 base-${BASE_SHA} head-${HEAD_SHA}`;
-  assert.match(holdReason(snapshot), /CI_RUN_NAME_BINDING_INVALID/u);
+  for (const field of ['runName', 'displayTitle']) {
+    const snapshot = makeReconcileSnapshot();
+    snapshot.ci[field] = `CI pull_request PR-20 base-${BASE_SHA} head-${HEAD_SHA}`;
+    assert.match(holdReason(snapshot), /CI_RUN_NAME_BINDING_INVALID/u);
+  }
 });
 
 test('rejects CI created before the current owner approval', () => {
@@ -749,6 +788,24 @@ test('rejects required-check additions or omissions', () => {
   }
 });
 
+function workflowRunEvent(overrides = {}) {
+  return {
+    workflow_run: {
+      id: 8001,
+      workflow_id: POLICY.qualityWorkflowId,
+      name: CI_RUN_NAME,
+      display_title: CI_RUN_NAME,
+      path: POLICY.qualityWorkflowPath,
+      event: 'pull_request',
+      head_sha: HEAD_SHA,
+      head_branch: 'issue-18-test',
+      run_attempt: 1,
+      pull_requests: [],
+      ...overrides,
+    },
+  };
+}
+
 test('resolves workflow-run PR from a unique head across all bases', async () => {
   const api = {
     async list(path) {
@@ -756,72 +813,101 @@ test('resolves workflow-run PR from a unique head across all bases', async () =>
       assert.doesNotMatch(path, /base=/u);
       return [{
         number: 19,
-        head: { sha: HEAD_SHA, repo: { id: POLICY.repositoryId } },
-        base: { repo: { id: POLICY.repositoryId } },
+        head: { ref: 'issue-18-test', sha: HEAD_SHA, repo: { id: POLICY.repositoryId } },
+        base: { ref: 'main', sha: BASE_SHA, repo: { id: POLICY.repositoryId } },
       }];
     },
   };
-  const number = await resolvePrNumber(api, '/repos/example/repo', 'workflow_run', {
-    workflow_run: {
-      id: 8001,
-      workflow_id: POLICY.qualityWorkflowId,
-      name: POLICY.qualityWorkflowName,
-      event: 'pull_request',
-      head_sha: HEAD_SHA,
-      head_branch: 'issue-18-test',
-      run_attempt: 1,
-      pull_requests: [],
-    },
-  });
+  const number = await resolvePrNumber(
+    api,
+    '/repos/example/repo',
+    'workflow_run',
+    workflowRunEvent(),
+  );
   assert.equal(number, 19);
 });
 
 test('PR resolution fails closed on multiple open PRs', async () => {
   const api = { async list() { return [{ number: 19 }, { number: 20 }]; } };
   await assert.rejects(
-    resolvePrNumber(api, '/repos/example/repo', 'workflow_run', {
-      workflow_run: {
-        workflow_id: POLICY.qualityWorkflowId,
-        name: POLICY.qualityWorkflowName,
-        event: 'pull_request',
-        head_sha: HEAD_SHA,
-        head_branch: 'issue-18-test',
-        run_attempt: 1,
-      },
-    }),
+    resolvePrNumber(api, '/repos/example/repo', 'workflow_run', workflowRunEvent()),
     /TRIGGER_PR_COUNT_2/u,
   );
 });
 
 test('workflow-run normalization preserves the exact run attempt', () => {
   const normalized = normalizeEvent('workflow_run', {
-    workflow_run: {
-      id: 8001,
-      workflow_id: POLICY.qualityWorkflowId,
-      name: POLICY.qualityWorkflowName,
-      head_sha: HEAD_SHA,
-      run_attempt: 2,
-    },
+    ...workflowRunEvent({ run_attempt: 2 }),
     sender: { id: 123, login: 'contributor', type: 'User' },
   });
   assert.equal(normalized.runAttempt, 2);
+  assert.equal(normalized.workflowPath, POLICY.qualityWorkflowPath);
+  assert.equal(normalized.workflowEvent, 'pull_request');
+  assert.equal(normalized.runName, CI_RUN_NAME);
+  assert.equal(normalized.displayTitle, CI_RUN_NAME);
 });
 
 test('workflow-run PR resolution rejects missing or invalid run attempts before API access', async () => {
   const api = { async list() { assert.fail('API must not be called'); } };
   for (const runAttempt of [undefined, 0, '1']) {
     await assert.rejects(
-      resolvePrNumber(api, '/repos/example/repo', 'workflow_run', {
-        workflow_run: {
-          workflow_id: POLICY.qualityWorkflowId,
-          name: POLICY.qualityWorkflowName,
-          event: 'pull_request',
-          head_sha: HEAD_SHA,
-          head_branch: 'issue-18-test',
-          run_attempt: runAttempt,
-        },
-      }),
+      resolvePrNumber(
+        api,
+        '/repos/example/repo',
+        'workflow_run',
+        workflowRunEvent({ run_attempt: runAttempt }),
+      ),
       /TRIGGER_WORKFLOW_SOURCE_INVALID/u,
+    );
+  }
+});
+
+test('workflow-run PR resolution rejects wrong source identity before API access', async () => {
+  const api = { async list() { assert.fail('API must not be called'); } };
+  for (const overrides of [
+    { id: 0 },
+    { workflow_id: POLICY.qualityWorkflowId + 1 },
+    { path: '.github/workflows/other.yml' },
+    { event: 'push' },
+    { head_branch: '' },
+  ]) {
+    await assert.rejects(
+      resolvePrNumber(
+        api,
+        '/repos/example/repo',
+        'workflow_run',
+        workflowRunEvent(overrides),
+      ),
+      /TRIGGER_WORKFLOW_SOURCE_INVALID/u,
+    );
+  }
+});
+
+test('workflow-run PR resolution requires exact dynamic name and display title', async () => {
+  const api = {
+    async list() {
+      return [{
+        number: 19,
+        head: { ref: 'issue-18-test', sha: HEAD_SHA, repo: { id: POLICY.repositoryId } },
+        base: { ref: 'main', sha: BASE_SHA, repo: { id: POLICY.repositoryId } },
+      }];
+    },
+  };
+  for (const overrides of [
+    { name: POLICY.qualityWorkflowName },
+    { name: `${CI_RUN_NAME} ` },
+    { display_title: `${CI_RUN_NAME} ` },
+    { name: `CI pull_request PR-20 base-${BASE_SHA} head-${HEAD_SHA}` },
+    { display_title: `CI pull_request PR-19 base-${'2'.repeat(40)} head-${HEAD_SHA}` },
+  ]) {
+    await assert.rejects(
+      resolvePrNumber(
+        api,
+        '/repos/example/repo',
+        'workflow_run',
+        workflowRunEvent(overrides),
+      ),
+      /TRIGGER_RUN_NAME_BINDING_INVALID/u,
     );
   }
 });
@@ -831,12 +917,21 @@ function ciApiFixture({
   suitePrNumber = null,
   runAttempt = 1,
   jobRunAttempt = runAttempt,
+  workflowOverrides = {},
+  runOverrides = {},
 } = {}) {
+  const workflow = {
+    id: POLICY.qualityWorkflowId,
+    name: POLICY.qualityWorkflowName,
+    path: POLICY.qualityWorkflowPath,
+    state: 'active',
+    ...workflowOverrides,
+  };
   const run = {
     id: 8001,
     workflow_id: POLICY.qualityWorkflowId,
-    name: POLICY.qualityWorkflowName,
-    display_title: `CI pull_request PR-19 base-${BASE_SHA} head-${HEAD_SHA}`,
+    name: CI_RUN_NAME,
+    display_title: CI_RUN_NAME,
     path: POLICY.qualityWorkflowPath,
     event: 'pull_request',
     head_sha: HEAD_SHA,
@@ -848,11 +943,15 @@ function ciApiFixture({
     conclusion: 'success',
     check_suite_id: 8101,
     run_attempt: runAttempt,
+    ...runOverrides,
   };
   return {
     async request(path) {
       if (path.includes('/actions/workflows/ci.yml/runs')) {
         return { data: { total_count: totalCount, workflow_runs: [run] } };
+      }
+      if (path.endsWith(`/actions/workflows/${POLICY.qualityWorkflowId}`)) {
+        return { data: workflow };
       }
       if (path.includes('/actions/runs/8001/jobs')) {
         return { data: { total_count: 1, jobs: [{
@@ -897,7 +996,10 @@ test('latest CI accepts the observed empty Check Suite PR list and ignores all-z
   });
   assert.deepEqual(ci.checkSuite.pullRequests, []);
   assert.equal(ci.checkSuite.after, HEAD_SHA);
-  assert.equal(ci.displayTitle, `CI pull_request PR-19 base-${BASE_SHA} head-${HEAD_SHA}`);
+  assert.equal(ci.workflowName, POLICY.qualityWorkflowName);
+  assert.equal(ci.workflowState, 'active');
+  assert.equal(ci.runName, CI_RUN_NAME);
+  assert.equal(ci.displayTitle, CI_RUN_NAME);
 });
 
 test('latest CI retains an explicit Check Suite PR binding when GitHub supplies it', async () => {
@@ -932,6 +1034,45 @@ test('latest CI rejects a non-positive run attempt', async () => {
     }),
     /CI_RUN_IDENTITY_SHAPE_INVALID/u,
   );
+});
+
+test('latest CI rejects a mismatched workflow definition', async () => {
+  for (const workflowOverrides of [
+    { id: POLICY.qualityWorkflowId + 1 },
+    { name: 'Other' },
+    { path: '.github/workflows/other.yml' },
+    { state: 'disabled_manually' },
+  ]) {
+    await assert.rejects(
+      latestCi(ciApiFixture({ workflowOverrides }), '/repos/example/repo', {
+        number: 19,
+        createdAt: PR_CREATED_AT,
+        base: { ref: 'main', sha: BASE_SHA, repoId: POLICY.repositoryId },
+        head: { ref: 'issue-18-test', sha: HEAD_SHA, repoId: POLICY.repositoryId },
+      }),
+      /CI_WORKFLOW_DEFINITION_INVALID/u,
+    );
+  }
+});
+
+test('latest CI rejects dynamic run-name or display-title mismatches', async () => {
+  for (const runOverrides of [
+    { name: POLICY.qualityWorkflowName },
+    { name: `${CI_RUN_NAME} ` },
+    { display_title: `${CI_RUN_NAME} ` },
+    { name: `CI pull_request PR-20 base-${BASE_SHA} head-${HEAD_SHA}` },
+    { display_title: `CI pull_request PR-19 base-${BASE_SHA} head-${'2'.repeat(40)}` },
+  ]) {
+    await assert.rejects(
+      latestCi(ciApiFixture({ runOverrides }), '/repos/example/repo', {
+        number: 19,
+        createdAt: PR_CREATED_AT,
+        base: { ref: 'main', sha: BASE_SHA, repoId: POLICY.repositoryId },
+        head: { ref: 'issue-18-test', sha: HEAD_SHA, repoId: POLICY.repositoryId },
+      }),
+      /CI_RUN_NAME_BINDING_INVALID/u,
+    );
+  }
 });
 
 test('canonical path validation rejects ambiguous inputs', () => {
