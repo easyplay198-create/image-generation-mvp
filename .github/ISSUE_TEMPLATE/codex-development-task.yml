@@ -14,16 +14,27 @@ body:
       required: true
 
   - type: dropdown
+    id: task_class
+    attributes:
+      label: Task class
+      description: Ordinary tasks cannot change protected control-plane paths. CONTROL_PLANE_CHANGE requires explicit owner approval and must declare zero repair rounds.
+      options:
+        - ORDINARY_TASK
+        - CONTROL_PLANE_CHANGE
+    validations:
+      required: true
+
+  - type: dropdown
     id: autonomous_mode
     attributes:
       label: Autonomous mode and maximum repair rounds
-      description: The owner-approved Codex execution budget is one initial task plus the selected repair limit. The repository hard cap is three, control-plane changes are always zero, and automatic repair requests remain disabled until idempotency and trusted-actor gates are machine-enforced.
+      description: V2 is observer-only and always has an effective limit of zero. A nonzero choice records only a future request; it cannot activate a writer. CONTROL_PLANE_CHANGE must select zero.
       options:
         - Disabled / 0 rounds
         - Observer only / 0 rounds
-        - Enabled / maximum 1 round after machine gates pass
-        - Enabled / maximum 2 rounds after machine gates pass
-        - Enabled / maximum 3 rounds after machine gates pass
+        - Future request only (inactive in V2) / maximum 1 round
+        - Future request only (inactive in V2) / maximum 2 rounds
+        - Future request only (inactive in V2) / maximum 3 rounds
     validations:
       required: true
 
@@ -31,8 +42,8 @@ body:
     id: allowed_paths
     attributes:
       label: Allowed modification paths
-      description: List the exact files or directories that may be changed.
-      placeholder: One path or path pattern per line.
+      description: List exact, case-sensitive, repository-relative file paths. Directories, globs, regular expressions, and path patterns are not accepted.
+      placeholder: One exact file path per line.
     validations:
       required: true
 
@@ -100,5 +111,25 @@ body:
       label: UI screenshot plan or exception
       description: For UI work, list the states, routes, and viewport sizes to capture. Explain any approved exception.
       placeholder: Not applicable, or the exact screenshot plan and locations.
+    validations:
+      required: true
+
+  - type: textarea
+    id: machine_control_contract
+    attributes:
+      label: Machine-readable control contract
+      description: Replace every placeholder. After the human owner approves the SHA-256 of the entire final Issue body, this hidden JSON is the machine source. Visible-field conflicts remain a human semantic HOLD and cannot widen this contract.
+      value: |
+        <!-- CONTROL_PLANE_V2_CONTRACT_BEGIN
+        {
+          "allowedPaths": ["replace/with/exact/file.ts"],
+          "authorizedBaseSha": "replace-with-40-or-64-character-lowercase-commit-sha",
+          "maxRepairRounds": 0,
+          "phase": "P2_LOCKED",
+          "requiredChecks": ["Quality gates"],
+          "schema": "github-autonomous-control-v2",
+          "taskClass": "ORDINARY_TASK"
+        }
+        CONTROL_PLANE_V2_CONTRACT_END -->
     validations:
       required: true
