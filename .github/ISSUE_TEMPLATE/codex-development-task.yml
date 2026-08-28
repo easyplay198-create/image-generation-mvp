@@ -17,10 +17,31 @@ body:
     id: task_class
     attributes:
       label: Task class
-      description: Ordinary tasks cannot change protected control-plane paths. CONTROL_PLANE_CHANGE requires explicit owner approval and must declare zero repair rounds.
+      description: Ordinary and P2 tasks cannot change protected control-plane paths. CONTROL_PLANE_CHANGE requires explicit owner approval, a protected-path-only allowlist, and zero automated repair rounds. P2_IMPLEMENTATION is task-scoped Draft-only work, also requires zero automated repair rounds, and may separately pre-authorize at most one human in-scope corrective update in the approved Issue body.
       options:
         - ORDINARY_TASK
         - CONTROL_PLANE_CHANGE
+        - P2_IMPLEMENTATION
+    validations:
+      required: true
+
+  - type: dropdown
+    id: task_phase
+    attributes:
+      label: Task phase
+      description: ORDINARY_TASK and CONTROL_PLANE_CHANGE must select P2_LOCKED. P2_IMPLEMENTATION must select P2_DRAFT_ONLY. P2_DRAFT_ONLY does not authorize Ready or merge.
+      options:
+        - P2_LOCKED
+        - P2_DRAFT_ONLY
+    validations:
+      required: true
+
+  - type: input
+    id: authorized_head_ref
+    attributes:
+      label: Authorized P2 task branch
+      description: For P2_IMPLEMENTATION, enter the exact new same-repository branch name pre-bound in the contract and owner approval. For other task classes enter Not applicable.
+      placeholder: issue-123-p2-draft-only or Not applicable
     validations:
       required: true
 
@@ -28,7 +49,7 @@ body:
     id: autonomous_mode
     attributes:
       label: Autonomous mode and maximum repair rounds
-      description: V2 is observer-only and always has an effective limit of zero. A nonzero choice records only a future request; it cannot activate a writer. CONTROL_PLANE_CHANGE must select zero.
+      description: V2 is observer-only and always has an effective automated limit of zero. A nonzero choice records only a future request; it cannot activate a writer. CONTROL_PLANE_CHANGE and P2_IMPLEMENTATION must select zero. Any single human corrective update is a separate visible, digest-bound P2 boundary and is never represented here as an automated repair round.
       options:
         - Disabled / 0 rounds
         - Observer only / 0 rounds
@@ -47,11 +68,32 @@ body:
     validations:
       required: true
 
+  - type: dropdown
+    id: p2_database_change_mode
+    attributes:
+      label: P2 database change mode
+      description: Select the additive database exception only for a P2 task whose exact allowlist contains modified prisma/schema.prisma, exactly one new timestamped _p2_ migration.sql, and an integration test. It never authorizes a production migration and does not replace task-specific owner approval for a non-P2 migration.
+      options:
+        - No P2 database change
+        - P2 additive schema plus exactly one new migration in isolated PostgreSQL
+        - Database change blocked pending separate owner decision
+    validations:
+      required: true
+
+  - type: textarea
+    id: p2_database_ddl_and_rollback
+    attributes:
+      label: P2 physical DDL and rollback boundary
+      description: For the P2 additive database exception, freeze the table, field, index, foreign-key, uniqueness, and immutability design; require the new migration directory to sort after the authorized base's latest migration; and provide fresh/repeat isolated-PostgreSQL evidence plus non-destructive rollback. For a separately owner-approved non-P2 migration, record its task-specific details; otherwise enter Not applicable.
+      placeholder: No DROP, rename, narrowing, DML/backfill, cutover, reset, down migration, shared database, or production database application.
+    validations:
+      required: true
+
   - type: textarea
     id: prohibitions
     attributes:
       label: Prohibited actions, out-of-scope work, and human-approval triggers
-      description: List task-specific boundaries and any additional human-approval triggers; they may add to but never remove repository hard stops. Hard stops include scope expansion, unapproved control-plane changes, unapproved migration or destructive action, real secrets, paid business-provider calls, external-service writes outside the approved GitHub Issue/task-branch/Draft-PR lifecycle, and wider network permissions.
+      description: List task-specific boundaries and any additional human-approval triggers; they may add to but never remove repository hard stops. Hard stops include scope expansion, unapproved or shape-invalid database change, missing migration semantic review, destructive action, real secrets, paid business-provider calls, external-service writes outside the approved GitHub Issue/task-branch/Draft-PR lifecycle, and wider network permissions.
       placeholder: List explicit boundaries, non-goals, and any additional conditions that require HOLD for human review.
     validations:
       required: true
@@ -118,7 +160,7 @@ body:
     id: machine_control_contract
     attributes:
       label: Machine-readable control contract
-      description: Replace every placeholder. After the human owner approves the SHA-256 of the entire final Issue body, this hidden JSON is the machine source. Visible-field conflicts remain a human semantic HOLD and cannot widen this contract.
+      description: Replace every placeholder. After the human owner approves the SHA-256 of the entire final Issue body, this hidden JSON is the machine source. For P2_IMPLEMENTATION, use phase P2_DRAFT_ONLY and insert an exact "authorizedHeadRef" key after "authorizedBaseSha". Do not add that key to other task classes. Visible-field conflicts remain a human semantic HOLD and cannot widen this contract.
       value: |
         <!-- CONTROL_PLANE_V2_CONTRACT_BEGIN
         {
