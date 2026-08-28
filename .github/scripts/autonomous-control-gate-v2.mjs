@@ -23,6 +23,11 @@ const CONTRACT_MARKER = 'CONTROL_PLANE_V2_CONTRACT';
 const APPROVAL_MARKER = 'CONTROL_PLANE_V2_APPROVAL';
 const LINK_MARKER = 'CONTROL_PLANE_V2_LINK';
 const LEDGER_MARKER = 'CONTROL_PLANE_V2_LEDGER';
+const TASK_PHASES = Object.freeze({
+  ORDINARY_TASK: 'P2_LOCKED',
+  CONTROL_PLANE_CHANGE: 'P2_LOCKED',
+  P2_IMPLEMENTATION: 'P2_DRAFT_ONLY',
+});
 const TERMINAL_CI_CONCLUSIONS = new Set(['success', 'failure']);
 const FILE_MODES = new Set(['100644', '100755', '120000', '160000']);
 const PROTECTED_PATHS = ['AGENTS.md', 'CODEOWNERS', '.github/', 'docs/governance/'];
@@ -64,7 +69,7 @@ function hold(reasons, details = {}) {
     unverifiedItems: [
       'BRANCH_PROTECTION',
       'OWNER_REVIEW_NO_BYPASS',
-      'OBSERVER_POST_MERGE_ACTIVATION',
+      'CONTROL_REVISION_POST_MERGE_ACTIVATION_IF_CHANGED',
       'P2_SEMANTIC_SCOPE_REVIEW',
       'EXACT_TEST_COMMAND_EXIT_CODES',
     ],
@@ -183,13 +188,28 @@ export function isCanonicalRepositoryPath(value) {
   return !segments.some((segment) => segment.length === 0 || segment === '.' || segment === '..');
 }
 
-function isOwner(user, association) {
+export function isCanonicalHeadRef(value) {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 255) return false;
+  if (value !== value.trim() || value.startsWith('/') || value.endsWith('/')) return false;
+  if (value.endsWith('.') || value === '@') return false;
+  if (value.includes('..') || value.includes('//') || value.includes('@{') || value.includes('\\')) {
+    return false;
+  }
+  const segments = value.split('/');
+  if (segments.some((segment) => segment.startsWith('.') || segment.endsWith('.lock'))) return false;
+  return !/[\u0000-\u0020\u007f~^:?*\[\]]/u.test(value);
+}
+
+function isOwnerIdentity(user) {
   return (
     user?.id === POLICY.owner.id &&
     user?.login === POLICY.owner.login &&
-    user?.type === POLICY.owner.type &&
-    association === 'OWNER'
+    user?.type === POLICY.owner.type
   );
+}
+
+function isOwner(user, association) {
+  return isOwnerIdentity(user) && association === 'OWNER';
 }
 
 function isActionsBot(user) {
@@ -208,15 +228,27 @@ function mentionsMarker(body, marker) {
 }
 
 function validateContract(contract) {
+  const p2Task = contract?.taskClass === 'P2_IMPLEMENTATION';
   exactKeys(
     contract,
-    ['allowedPaths', 'authorizedBaseSha', 'maxRepairRounds', 'phase', 'requiredChecks', 'schema', 'taskClass'],
+    [
+      'allowedPaths',
+      'authorizedBaseSha',
+      ...(p2Task ? ['authorizedHeadRef'] : []),
+      'maxRepairRounds',
+      'phase',
+      'requiredChecks',
+      'schema',
+      'taskClass',
+    ],
     'CONTRACT',
   );
   if (contract.schema !== POLICY.schema) throw new Error('CONTRACT_SCHEMA_INVALID');
-  if (contract.phase !== 'P2_LOCKED') throw new Error('P2_NOT_LOCKED');
-  if (!['ORDINARY_TASK', 'CONTROL_PLANE_CHANGE'].includes(contract.taskClass)) {
-    throw new Error('TASK_CLASS_INVALID');
+  const expectedPhase = TASK_PHASES[contract.taskClass];
+  if (!expectedPhase) throw new Error('TASK_CLASS_INVALID');
+  if (contract.phase !== expectedPhase) throw new Error('TASK_CLASS_PHASE_MISMATCH');
+  if (p2Task && !isCanonicalHeadRef(contract.authorizedHeadRef)) {
+    throw new Error('AUTHORIZED_HEAD_REF_INVALID');
   }
   if (!isCommitSha(contract.authorizedBaseSha)) throw new Error('AUTHORIZED_BASE_SHA_INVALID');
   if (
@@ -229,6 +261,9 @@ function validateContract(contract) {
   if (contract.taskClass === 'CONTROL_PLANE_CHANGE' && contract.maxRepairRounds !== 0) {
     throw new Error('CONTROL_PLANE_CHANGE_REPAIR_LIMIT_NOT_ZERO');
   }
+  if (p2Task && contract.maxRepairRounds !== 0) {
+    throw new Error('P2_IMPLEMENTATION_REPAIR_LIMIT_NOT_ZERO');
+  }
   if (!Array.isArray(contract.allowedPaths) || contract.allowedPaths.length === 0) {
     throw new Error('ALLOWLIST_EMPTY');
   }
@@ -237,6 +272,12 @@ function validateContract(contract) {
     new Set(contract.allowedPaths).size !== contract.allowedPaths.length
   ) {
     throw new Error('ALLOWLIST_INVALID');
+  }
+  if (
+    contract.taskClass === 'CONTROL_PLANE_CHANGE' &&
+    contract.allowedPaths.some((path) => !pathIsProtected(path))
+  ) {
+    throw new Error('CONTROL_PLANE_CHANGE_NON_CONTROL_PATH');
   }
   const expectedChecks = [POLICY.qualityJobName];
   if (
@@ -253,14 +294,22 @@ function parseTrustedApproval(comment) {
     throw new Error('APPROVAL_EDITED_OR_TIME_MISSING');
   }
   const approval = extractMarkedJson(comment.body, APPROVAL_MARKER);
+  const p2Approval = Object.hasOwn(approval, 'authorizedHeadRef');
   exactKeys(
     approval,
-    ['authorizedBaseSha', 'issueBodySha256', 'maxRepairRounds', 'phase', 'schema'],
+    [
+      'authorizedBaseSha',
+      ...(p2Approval ? ['authorizedHeadRef'] : []),
+      'issueBodySha256',
+      'maxRepairRounds',
+      'phase',
+      'schema',
+    ],
     'APPROVAL',
   );
   if (
     approval.schema !== POLICY.schema ||
-    approval.phase !== 'P2_LOCKED' ||
+    approval.phase !== (p2Approval ? 'P2_DRAFT_ONLY' : 'P2_LOCKED') ||
     !/^[0-9a-f]{64}$/u.test(approval.issueBodySha256) ||
     !isCommitSha(approval.authorizedBaseSha) ||
     !Number.isInteger(approval.maxRepairRounds) ||
@@ -268,6 +317,9 @@ function parseTrustedApproval(comment) {
     approval.maxRepairRounds > POLICY.hardRepairLimit
   ) {
     throw new Error('APPROVAL_SHAPE_INVALID');
+  }
+  if (p2Approval && !isCanonicalHeadRef(approval.authorizedHeadRef)) {
+    throw new Error('APPROVAL_HEAD_REF_INVALID');
   }
   return approval;
 }
@@ -281,7 +333,14 @@ function currentApproval(comments, contract, issueBodySha256) {
     if (approval.issueBodySha256 !== issueBodySha256) continue;
     if (
       approval.authorizedBaseSha !== contract.authorizedBaseSha ||
-      approval.maxRepairRounds !== contract.maxRepairRounds
+      approval.maxRepairRounds !== contract.maxRepairRounds ||
+      approval.phase !== contract.phase ||
+      Object.hasOwn(approval, 'authorizedHeadRef') !==
+        (contract.taskClass === 'P2_IMPLEMENTATION') ||
+      (
+        contract.taskClass === 'P2_IMPLEMENTATION' &&
+        approval.authorizedHeadRef !== contract.authorizedHeadRef
+      )
     ) {
       throw new Error('APPROVAL_BINDING_MISMATCH');
     }
@@ -350,9 +409,9 @@ function validateChangedFiles(changedFiles, contract) {
       if (!isCanonicalRepositoryPath(path)) throw new Error('CHANGED_PATH_INVALID');
       if (!allowlist.has(path)) throw new Error(`CHANGED_PATH_NOT_ALLOWED:${path}`);
       seen.add(path);
-      if (LIFECYCLE_PATHS.has(path)) lifecycleChange = true;
-      if (contract.taskClass === 'ORDINARY_TASK' && pathIsProtected(path)) {
-        throw new Error(`ORDINARY_TASK_PROTECTED_PATH:${path}`);
+      if (LIFECYCLE_PATHS.has(path.split('/').at(-1))) lifecycleChange = true;
+      if (contract.taskClass !== 'CONTROL_PLANE_CHANGE' && pathIsProtected(path)) {
+        throw new Error(`NON_CONTROL_PLANE_PROTECTED_PATH:${path}`);
       }
     }
     if (file.mode === '120000' || file.previousMode === '120000') {
@@ -452,6 +511,10 @@ function validatePr(pr, relatedPullRequests, contract) {
     relatedPullRequests[0].number !== pr.number
   ) {
     throw new Error('PR_NOT_UNIQUE_FOR_BRANCH');
+  }
+  if (contract.taskClass === 'P2_IMPLEMENTATION') {
+    if (!isOwnerIdentity(pr.user)) throw new Error('P2_PR_CREATOR_NOT_OWNER');
+    if (pr.head.ref !== contract.authorizedHeadRef) throw new Error('P2_PR_HEAD_REF_NOT_AUTHORIZED');
   }
   if (pr.base.sha !== contract.authorizedBaseSha) throw new Error('PR_BASE_SHA_NOT_AUTHORIZED_BASE');
 }
@@ -589,6 +652,7 @@ export function evaluateControlSnapshot(snapshot) {
     validatePr(snapshot.pr, snapshot.relatedPullRequests, contract);
     validateLink(snapshot.pr, snapshot.issue, contract, approval, issueBodySha256);
     const pathResult = validateChangedFiles(snapshot.changedFiles, contract);
+    if (pathResult.lifecycleChange) throw new Error('LIFECYCLE_CHANGE_REQUIRES_HUMAN');
     const ledgerEntries = validateLedger(snapshot.prComments ?? [], {
       issueNumber: snapshot.issue.number,
       prNumber: snapshot.pr.number,
@@ -608,10 +672,13 @@ export function evaluateControlSnapshot(snapshot) {
       prNumber: snapshot.pr.number,
       prUrl: `https://github.com/${POLICY.repositoryFullName}/pull/${snapshot.pr.number}`,
       headSha: snapshot.pr.head.sha,
+      operationPath: `https://github.com/${POLICY.repositoryFullName}/tree/${snapshot.pr.head.sha}`,
+      outputPath: `https://github.com/${POLICY.repositoryFullName}/pull/${snapshot.pr.number}`,
       changedFiles: [...new Set(snapshot.changedFiles.flatMap((file) =>
         file.status === 'renamed' ? [file.previousFilename, file.filename] : [file.filename],
       ))].sort(),
       taskClass: contract.taskClass,
+      phase: contract.phase,
       requestedRepairLimit: contract.maxRepairRounds,
       ciStatus: snapshot.ci ? `${snapshot.ci.status}/${snapshot.ci.conclusion}` : 'NOT_FOUND',
       autoFixRoundCount: 0,
@@ -619,21 +686,31 @@ export function evaluateControlSnapshot(snapshot) {
     const conclusion = validateCi(snapshot.ci, snapshot.pr, approval.createdAt);
     validatePrTimeline(snapshot.prTimeline, snapshot.ci);
     if (conclusion === 'success') {
-      return pass('CI_ACCEPTED_OBSERVER_ONLY', {
+      const p2DraftOnly = contract.taskClass === 'P2_IMPLEMENTATION';
+      return pass(
+        p2DraftOnly ? 'P2_DRAFT_ONLY_CI_ACCEPTED_OBSERVER_ONLY' : 'CI_ACCEPTED_OBSERVER_ONLY',
+        {
         ...details,
+        ...(p2DraftOnly ? { p2Status: 'DRAFT_ONLY' } : {}),
         unverifiedItems: [
           'BRANCH_PROTECTION',
           'OWNER_REVIEW_NO_BYPASS',
-          'OBSERVER_POST_MERGE_ACTIVATION',
-          'APPROVAL_PR_AND_HEAD_REF_BINDING',
+          ...(
+            contract.taskClass === 'CONTROL_PLANE_CHANGE'
+              ? ['PROPOSED_CONTROL_REVISION_POST_MERGE_ACTIVATION']
+              : []
+          ),
+          ...(p2DraftOnly ? [] : ['APPROVAL_PR_AND_HEAD_REF_BINDING']),
           'VISIBLE_ISSUE_FIELDS_MATCH_CONTRACT',
           'P2_SEMANTIC_SCOPE_REVIEW',
           'EXACT_TEST_COMMAND_EXIT_CODES',
         ],
-        humanActionRequired: 'HUMAN_REVIEW;DO_NOT_MERGE_BY_AUTOMATION',
-      });
+        humanActionRequired: p2DraftOnly
+          ? 'KEEP_DRAFT;HUMAN_SEMANTIC_REVIEW;DO_NOT_MERGE_BY_AUTOMATION'
+          : 'HUMAN_REVIEW;DO_NOT_MERGE_BY_AUTOMATION',
+        },
+      );
     }
-    if (pathResult.lifecycleChange) throw new Error('LIFECYCLE_CHANGE_REQUIRES_HUMAN');
     throw new Error('OBSERVER_ONLY_AUTO_FIX_DISABLED');
   } catch (error) {
     return hold([error instanceof Error ? error.message : 'UNKNOWN_GATE_ERROR'], {
@@ -973,6 +1050,7 @@ async function loadSnapshotOnce(api, repositoryPath, prNumber, eventName, event)
     createdAt: pr.created_at,
     updatedAt: pr.updated_at,
     body: pr.body ?? '',
+    user: normalizeUser(pr.user),
     changedFilesCount: pr.changed_files,
     base: { ref: pr.base?.ref, sha: pr.base?.sha, repoId: pr.base?.repo?.id },
     head: { ref: pr.head?.ref, sha: pr.head?.sha, repoId: pr.head?.repo?.id },
@@ -990,7 +1068,7 @@ async function loadSnapshotOnce(api, repositoryPath, prNumber, eventName, event)
     api.list(`${repositoryPath}/issues/${prNumber}/comments`),
     api.list(`${repositoryPath}/issues/${prNumber}/timeline`),
     api.list(`${repositoryPath}/pulls/${prNumber}/files`),
-    api.list(`${repositoryPath}/pulls?state=open&head=${encodeURIComponent(`${POLICY.owner.login}:${normalizedPr.head.ref}`)}`),
+    api.list(`${repositoryPath}/pulls?state=all&head=${encodeURIComponent(`${POLICY.owner.login}:${normalizedPr.head.ref}`)}`),
     api.request(`${repositoryPath}/git/trees/${baseCommit.tree.sha}?recursive=1`),
     api.request(`${repositoryPath}/git/trees/${headCommit.tree.sha}?recursive=1`),
     latestCi(api, repositoryPath, normalizedPr),
@@ -1065,6 +1143,7 @@ export async function buildSnapshotFromGitHub({
     createdAt: finalPr.created_at,
     updatedAt: finalPr.updated_at,
     body: finalPr.body ?? '',
+    user: normalizeUser(finalPr.user),
     changedFilesCount: finalPr.changed_files,
     base: { ref: finalPr.base?.ref, sha: finalPr.base?.sha, repoId: finalPr.base?.repo?.id },
     head: { ref: finalPr.head?.ref, sha: finalPr.head?.sha, repoId: finalPr.head?.repo?.id },
@@ -1094,6 +1173,8 @@ export function formatResultLines(result) {
     AUTO_FIX_WRITE: result.autoFixWrite,
     AUTO_MERGE: result.autoMerge,
     P2_STATUS: result.p2Status,
+    OPERATION_PATH: result.operationPath ?? 'UNKNOWN',
+    OUTPUT_PATH: result.outputPath ?? 'UNKNOWN',
     UNVERIFIED_ITEMS: result.unverifiedItems?.join(',') ?? 'NONE',
     HUMAN_ACTION_REQUIRED: result.humanActionRequired ?? 'REVIEW_RESULT',
     REASONS: result.reasons.join(',') || 'NONE',

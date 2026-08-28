@@ -17,10 +17,31 @@ body:
     id: task_class
     attributes:
       label: Task class
-      description: Ordinary tasks cannot change protected control-plane paths. CONTROL_PLANE_CHANGE requires explicit owner approval and must declare zero repair rounds.
+      description: Ordinary and P2 tasks cannot change protected control-plane paths. CONTROL_PLANE_CHANGE requires explicit owner approval, a protected-path-only allowlist, and zero repair rounds. P2_IMPLEMENTATION is task-scoped Draft-only work and also requires zero repair rounds.
       options:
         - ORDINARY_TASK
         - CONTROL_PLANE_CHANGE
+        - P2_IMPLEMENTATION
+    validations:
+      required: true
+
+  - type: dropdown
+    id: task_phase
+    attributes:
+      label: Task phase
+      description: ORDINARY_TASK and CONTROL_PLANE_CHANGE must select P2_LOCKED. P2_IMPLEMENTATION must select P2_DRAFT_ONLY. P2_DRAFT_ONLY does not authorize Ready or merge.
+      options:
+        - P2_LOCKED
+        - P2_DRAFT_ONLY
+    validations:
+      required: true
+
+  - type: input
+    id: authorized_head_ref
+    attributes:
+      label: Authorized P2 task branch
+      description: For P2_IMPLEMENTATION, enter the exact new same-repository branch name pre-bound in the contract and owner approval. For other task classes enter Not applicable.
+      placeholder: issue-123-p2-draft-only or Not applicable
     validations:
       required: true
 
@@ -28,7 +49,7 @@ body:
     id: autonomous_mode
     attributes:
       label: Autonomous mode and maximum repair rounds
-      description: V2 is observer-only and always has an effective limit of zero. A nonzero choice records only a future request; it cannot activate a writer. CONTROL_PLANE_CHANGE must select zero.
+      description: V2 is observer-only and always has an effective limit of zero. A nonzero choice records only a future request; it cannot activate a writer. CONTROL_PLANE_CHANGE and P2_IMPLEMENTATION must select zero.
       options:
         - Disabled / 0 rounds
         - Observer only / 0 rounds
@@ -118,7 +139,7 @@ body:
     id: machine_control_contract
     attributes:
       label: Machine-readable control contract
-      description: Replace every placeholder. After the human owner approves the SHA-256 of the entire final Issue body, this hidden JSON is the machine source. Visible-field conflicts remain a human semantic HOLD and cannot widen this contract.
+      description: Replace every placeholder. After the human owner approves the SHA-256 of the entire final Issue body, this hidden JSON is the machine source. For P2_IMPLEMENTATION, use phase P2_DRAFT_ONLY and insert an exact "authorizedHeadRef" key after "authorizedBaseSha". Do not add that key to other task classes. Visible-field conflicts remain a human semantic HOLD and cannot widen this contract.
       value: |
         <!-- CONTROL_PLANE_V2_CONTRACT_BEGIN
         {
