@@ -2,6 +2,23 @@
 
 Closes #
 
+## Autonomous control status
+
+- Control-plane version: `GITHUB_AUTONOMOUS_DEVELOPMENT_CONTROL_PLANE_V1`
+- Current phase: `P2_LOCKED`
+- Task class: `ORDINARY_TASK` / `CONTROL_PLANE_CHANGE`
+- Issue approval URL:
+- Approver GitHub login:
+- Approved Issue body SHA-256:
+- Authorized base SHA:
+- Requested autonomy/round limit:
+- Effective automated repair round limit: `0`
+- Automated repair round count: `0`
+- Last processed event/comment ID: `none`
+- Last processed head SHA: `none`
+- [ ] Any repair request was issued only after trusted-actor and idempotency gates passed.
+- [ ] This pull request must not be auto-merged; final merge requires a human decision.
+
 ## Change scope
 
 ### Files and behavior changed
@@ -35,8 +52,8 @@ Report the exact command and its real exit code. Do not report a command as pass
 ## Database migration
 
 - [ ] No database migration is included.
-- [ ] A migration is included and its forward, repeat, and rollback behavior is documented below.
-- Migration details or reason not applicable:
+- [ ] A separately owner-approved migration is included; the approval URL plus forward, repeat, and rollback evidence are documented below. Without that approval, status is `HOLD`.
+- Approval and migration details or reason not applicable:
 
 ## UI screenshots
 
@@ -62,3 +79,22 @@ Describe the exact revert or recovery procedure and any data implications.
 List every unverified behavior, environment, service, or manual review item. Write `None` only when all acceptance criteria have direct evidence.
 
 -
+
+## Structured handback
+
+```text
+RESULT=PASS|HOLD|FAIL
+CONTROL_STATE=READY_FOR_HUMAN_MERGE|HOLD|FAIL
+ISSUE_URL=
+ISSUE_APPROVAL_URL=
+ISSUE_BODY_SHA256=
+DRAFT_PR_URL=
+BASE_SHA=
+HEAD_SHA=
+CHANGED_FILES=
+TEST_COMMANDS_AND_EXIT_CODES=
+CI_STATUS=
+AUTO_FIX_ROUND_COUNT=
+UNVERIFIED_ITEMS=
+HUMAN_ACTION_REQUIRED=
+```
