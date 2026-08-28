@@ -1,0 +1,63 @@
+name: Autonomous control gate V2
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+  issue_comment:
+    types:
+      - created
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  observer:
+    name: Autonomous control gate
+    if: >-
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.event == 'pull_request' &&
+       github.event.workflow_run.workflow_id == 330531212) ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       github.event.comment.author_association == 'OWNER' &&
+       github.event.sender.id == 268785207 &&
+       github.event.sender.login == 'easyplay198-create' &&
+       github.event.comment.body == 'CONTROL_PLANE_V2_RECONCILE')
+    concurrency:
+      group: autonomous-control-v2-${{ github.repository_id }}
+      cancel-in-progress: false
+      queue: max
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      CONTROL_PLANE_MODE: OBSERVER_ONLY
+      GITHUB_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Check out the immutable trusted workflow revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Verify the trusted observer implementation
+        run: |
+          node --check .github/scripts/autonomous-control-gate-v2.mjs
+          node --check .github/scripts/autonomous-control-gate-v2.test.mjs
+          node --test .github/scripts/autonomous-control-gate-v2.test.mjs
+
+      - name: Evaluate live GitHub metadata without writes
+        run: node .github/scripts/autonomous-control-gate-v2.mjs observe
