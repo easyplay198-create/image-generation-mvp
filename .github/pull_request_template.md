@@ -18,7 +18,8 @@ Closes #
 - Automated repair round count: `0`
 - [ ] No automatic repair request was issued; the V2 writer and Codex dispatch remain disabled.
 - [ ] This pull request must not be auto-merged; final merge requires a human decision.
-- [ ] If this is `P2_IMPLEMENTATION`, the PR is owner-created, remains Draft, uses the exact pre-approved head ref, declares zero repair rounds, and is limited to `docs/governance/V5_P2_ENTRY_GOVERNANCE.md`.
+- [ ] If this is `P2_IMPLEMENTATION`, the PR is owner-created, remains Draft, uses the exact pre-approved head ref, declares zero automated repair rounds, and is governed by the mandatory boundaries in `docs/governance/V5_P2_ENTRY_GOVERNANCE.md`.
+- [ ] Any human corrective update stayed inside the same Issue, branch, Draft PR, path allowlist, and frozen semantics; at most one is allowed and its count is reported below.
 
 <!-- CONTROL_PLANE_V2_LINK_BEGIN
 {"approvalCommentId":0,"authorizedBaseSha":"replace-with-authorized-base-sha","issueBodySha256":"replace-with-lowercase-sha256","issueNumber":0,"schema":"github-autonomous-control-v2"}
@@ -57,7 +58,11 @@ Report the exact command and its real exit code. Do not report a command as pass
 ## Database migration
 
 - [ ] No database migration is included.
-- [ ] A separately owner-approved migration is included; the approval URL plus forward, repeat, and rollback evidence are documented below. Without that approval, status is `HOLD`.
+- [ ] A P2 database-foundation exception is included: `prisma/schema.prisma` is modified, exactly one new `prisma/migrations/<14-digit timestamp>_p2_<slug>/migration.sql` is added, and at least one exact path under `tests/integration/` ending in `.test.ts` verifies it.
+- [ ] A separately owner-approved non-P2 migration is included; the approval URL plus forward, repeat, rollback, and human semantic-review evidence are documented below. Without that approval, status is `HOLD`.
+- [ ] The owner-approved Issue freezes the physical DDL; fresh and repeated migration application passed only in disposable isolated PostgreSQL.
+- [ ] The new migration directory sorts after the authorized base's latest migration directory.
+- [ ] Human semantic review confirmed additive-only SQL and no historical-migration edit, destructive/narrowing operation, DML/backfill, cutover, reset, down migration, shared database, or production database application.
 - Approval and migration details or reason not applicable:
 
 ## UI screenshots
@@ -104,7 +109,9 @@ HEAD_SHA=
 CHANGED_FILES=
 TEST_COMMANDS_AND_EXIT_CODES=
 CI_STATUS=
+REQUESTED_AUTOMATED_REPAIR_LIMIT=
 AUTO_FIX_ROUND_COUNT=
+HUMAN_CORRECTION_ROUND_COUNT=
 P2_STATUS=LOCKED|DRAFT_ONLY
 OPERATION_PATH=
 OUTPUT_PATH=

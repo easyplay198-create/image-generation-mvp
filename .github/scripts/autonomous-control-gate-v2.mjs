@@ -385,6 +385,56 @@ function pathIsProtected(path) {
   );
 }
 
+function validateP2DatabaseChangeShape(changedFiles, contract) {
+  if (contract.taskClass !== 'P2_IMPLEMENTATION') return 'NOT_APPLICABLE';
+  const schemaFiles = changedFiles.filter((file) =>
+    file.filename === 'prisma/schema.prisma' || file.previousFilename === 'prisma/schema.prisma',
+  );
+  const migrationFiles = changedFiles.filter((file) =>
+    file.filename.startsWith('prisma/migrations/') ||
+    file.previousFilename?.startsWith('prisma/migrations/'),
+  );
+  const prismaFiles = changedFiles.filter((file) =>
+    file.filename.startsWith('prisma/') || file.previousFilename?.startsWith('prisma/'),
+  );
+  if (prismaFiles.length === 0) return 'NONE';
+  if (
+    schemaFiles.length !== 1 ||
+    schemaFiles[0].filename !== 'prisma/schema.prisma' ||
+    schemaFiles[0].status !== 'modified' ||
+    schemaFiles[0].mode !== '100644' ||
+    schemaFiles[0].previousMode !== '100644'
+  ) {
+    throw new Error('P2_DATABASE_SCHEMA_CHANGE_SHAPE_INVALID');
+  }
+  if (migrationFiles.length !== 1) {
+    throw new Error('P2_DATABASE_MIGRATION_COUNT_INVALID');
+  }
+  const migration = migrationFiles[0];
+  if (
+    migration.status !== 'added' ||
+    migration.previousFilename !== null ||
+    migration.previousMode !== null ||
+    migration.mode !== '100644' ||
+    !/^prisma\/migrations\/[0-9]{14}_p2_[a-z0-9][a-z0-9_-]*\/migration\.sql$/u.test(
+      migration.filename,
+    )
+  ) {
+    throw new Error('P2_DATABASE_MIGRATION_SHAPE_INVALID');
+  }
+  if (prismaFiles.length !== 2) {
+    throw new Error('P2_DATABASE_EXTRA_PRISMA_PATH');
+  }
+  if (!changedFiles.some((file) =>
+    file.status !== 'removed' &&
+    file.filename.startsWith('tests/integration/') &&
+    file.filename.endsWith('.test.ts')
+  )) {
+    throw new Error('P2_DATABASE_TEST_PATH_REQUIRED');
+  }
+  return 'SINGLE_MIGRATION_METADATA_SHAPE_ONLY';
+}
+
 function validateModeShape(file) {
   const current = file.mode;
   const previous = file.previousMode;
@@ -431,7 +481,8 @@ function validateChangedFiles(changedFiles, contract) {
   if (seen.size !== allowlist.size || [...seen].some((path) => !allowlist.has(path))) {
     throw new Error('ALLOWLIST_AND_DIFF_SET_MISMATCH');
   }
-  return { lifecycleChange };
+  const databaseChange = validateP2DatabaseChangeShape(changedFiles, contract);
+  return { databaseChange, lifecycleChange };
 }
 
 function validateLedger(comments, context) {
@@ -717,6 +768,7 @@ export function evaluateControlSnapshot(snapshot) {
       taskClass: contract.taskClass,
       phase: contract.phase,
       requestedRepairLimit: contract.maxRepairRounds,
+      databaseChange: pathResult.databaseChange,
       ciStatus: snapshot.ci ? `${snapshot.ci.status}/${snapshot.ci.conclusion}` : 'NOT_FOUND',
       autoFixRoundCount: 0,
     };
@@ -738,6 +790,11 @@ export function evaluateControlSnapshot(snapshot) {
               : []
           ),
           ...(p2DraftOnly ? [] : ['APPROVAL_PR_AND_HEAD_REF_BINDING']),
+          ...(
+            p2DraftOnly && pathResult.databaseChange === 'SINGLE_MIGRATION_METADATA_SHAPE_ONLY'
+              ? ['P2_DATABASE_MIGRATION_SEMANTICS']
+              : []
+          ),
           'VISIBLE_ISSUE_FIELDS_MATCH_CONTRACT',
           'P2_SEMANTIC_SCOPE_REVIEW',
           'EXACT_TEST_COMMAND_EXIT_CODES',
@@ -1248,6 +1305,8 @@ export function formatResultLines(result) {
     CHANGED_FILES: result.changedFiles?.join(',') ?? 'UNKNOWN',
     TEST_COMMANDS_AND_EXIT_CODES: 'UNVERIFIED_FROM_READ_ONLY_GITHUB_METADATA;SEE_EXACT_CI_RUN_LOGS',
     CI_STATUS: result.ciStatus ?? 'UNKNOWN',
+    REQUESTED_AUTOMATED_REPAIR_LIMIT: result.requestedRepairLimit ?? 0,
+    HUMAN_CORRECTION_ROUND_COUNT: 'UNVERIFIED_FROM_READ_ONLY_GITHUB_METADATA',
     AUTO_FIX_ROUND_COUNT: result.autoFixRoundCount ?? 0,
     AUTO_FIX_WRITE: result.autoFixWrite,
     AUTO_MERGE: result.autoMerge,

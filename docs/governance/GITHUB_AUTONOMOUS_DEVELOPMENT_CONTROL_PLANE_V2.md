@@ -63,7 +63,9 @@ An owner-approved P2 task uses the same schema plus one exact branch binding:
 CONTROL_PLANE_V2_CONTRACT_END -->
 ```
 
-The accepted task/phase pairs are exactly `ORDINARY_TASK + P2_LOCKED`, `CONTROL_PLANE_CHANGE + P2_LOCKED`, and `P2_IMPLEMENTATION + P2_DRAFT_ONLY`. Paths are exact, case-sensitive, NFC-normalized repository-relative files. Absolute paths, backslashes, empty segments, `.`/`..`, globs, regular expressions, and duplicates are rejected. The allowlist and final changed-path set must match exactly; a rename requires both paths. Only `CONTROL_PLANE_CHANGE` may change any root or nested `AGENTS.md`/`AGENTS.override.md`, `CODEOWNERS`, `.github/**`, or `docs/governance/**`, and its allowlist may contain only protected paths. Both `CONTROL_PLANE_CHANGE` and `P2_IMPLEMENTATION` must declare zero rounds.
+The accepted task/phase pairs are exactly `ORDINARY_TASK + P2_LOCKED`, `CONTROL_PLANE_CHANGE + P2_LOCKED`, and `P2_IMPLEMENTATION + P2_DRAFT_ONLY`. Paths are exact, case-sensitive, NFC-normalized repository-relative files. Absolute paths, backslashes, empty segments, `.`/`..`, globs, regular expressions, and duplicates are rejected. The allowlist and final changed-path set must match exactly; a rename requires both paths. Only `CONTROL_PLANE_CHANGE` may change any root or nested `AGENTS.md`/`AGENTS.override.md`, `CODEOWNERS`, `.github/**`, or `docs/governance/**`, and its allowlist may contain only protected paths. Both `CONTROL_PLANE_CHANGE` and `P2_IMPLEMENTATION` must declare zero automated repair rounds.
+
+The approved visible body of a P2 Issue may separately authorize at most one human-orchestrated corrective update after the initial implementation. The Issue-body digest binds that limit, but the read-only observer cannot count or dispatch it. It must remain within the same Issue, branch, Draft PR, exact allowlist, dependencies, and frozen semantics; a second correction or any expansion returns `HOLD`. This does not change `maxRepairRounds: 0`, `effectiveAutoFixLimit: 0`, or the disabled writer.
 
 `requiredChecks` contains only the PR-head check that the evaluator directly validates: `Quality gates`. `Autonomous control gate` is only the fixed observer job identity; it is not a PR-head required/protected status check and must never be configured or represented as one.
 
@@ -133,6 +135,7 @@ The observer returns `HOLD` unless all applicable checks pass:
 9. A fully paginated PR timeline with no base change, close/reopen, ref deletion/restoration, or base/head force-push event at or after the selected CI run was created. Combined with the `CI` workflow's `main` base filter, approval-time rule, and exact event-derived run name, this prevents a historical run from being accepted for another PR/base/head lifecycle.
 10. Exactly one completed `Quality gates` job bound to run ID, attempt, head, and workflow conclusion.
 11. Reserved ledger ambiguity, any lifecycle/package change regardless of CI result, unapproved or out-of-scope P2 work, secret access, permission expansion, API/GraphQL errors, pagination, or snapshot races all fail closed.
+12. If a P2 diff touches `prisma/`, the machine requires exactly a modified regular-file `prisma/schema.prisma`, one added regular-file `prisma/migrations/<14-digit timestamp>_p2_<slug>/migration.sql`, no other `prisma/` path, and at least one changed exact path under `tests/integration/` ending in `.test.ts`. This proves shape only, not additive SQL semantics.
 
 Only `success` and `failure` are accepted terminal CI conclusions. Locked-task success produces `CI_ACCEPTED_OBSERVER_ONLY`. P2 success produces `P2_DRAFT_ONLY_CI_ACCEPTED_OBSERVER_ONLY`, keeps `CONTROL_STATE=OBSERVER_ONLY`, reports `P2_STATUS=DRAFT_ONLY`, and requires `KEEP_DRAFT`; it is not semantic acceptance or merge authorization. Failure produces `HOLD` and never dispatches a repair.
 
@@ -140,12 +143,18 @@ Only `success` and `failure` are accepted terminal CI conclusions. Locked-task s
 
 Issue, PR, review, log, and artifact text are untrusted and never executed. V2 does not use `openai/codex-action`, an OpenAI API key, Qwen, S3, production databases, user credentials, paid providers, business providers, external downloads, PR caches, or artifacts. CI-only dummy values and its isolated PostgreSQL service remain test fixtures, not project credentials.
 
+## Task-scoped P2 additive database exception
+
+The upstream P1 contract requires additive expansion before the P2 domain objects can be persisted. A separately owner-approved P2 Issue may therefore include the exact database-change shape in gate 12 only after it freezes the applicable physical PostgreSQL DDL, including tables, columns, indexes, composite foreign keys, uniqueness, and immutability enforcement.
+
+The new migration may be applied only by fixed Quality gates to fresh and repeated disposable isolated PostgreSQL. It must not edit migration history or perform a destructive or narrowing change, DML/backfill, historical conversion, cutover, reset, down migration, shared-database application, or production migration. The metadata observer does not parse SQL or prove those semantics, so `P2_DATABASE_MIGRATION_SEMANTICS` remains an explicit human-review item whenever the exception is used. Ready and merge still require a separate human decision.
+
 ## Mandatory `HOLD`
 
 - Any actor, identity, association, digest, base, PR, head, workflow, Check Suite, job, path, tree, mode, ledger, repair-budget, pagination, GraphQL, API, or two-read mismatch.
 - Edited, missing, duplicated, stale, deleted, malformed, or conflicting trusted evidence.
-- A non-control-plane task touching a protected path; a control-plane allowlist containing a non-protected path; or a control-plane/P2 task declaring nonzero repair rounds.
-- Any task/phase pair outside the three frozen pairs; P2 without exact owner/branch/approval binding; P2 outside `V5_P2_ENTRY_GOVERNANCE.md`; migration, destructive action, real secret, permission expansion, external write, provider call, or semantic ambiguity.
+- A non-control-plane task touching a protected path; a control-plane allowlist containing a non-protected path; or a control-plane/P2 task declaring nonzero automated repair rounds.
+- Any task/phase pair outside the three frozen pairs; P2 without exact owner/branch/approval binding; P2 outside `V5_P2_ENTRY_GOVERNANCE.md`; a P2 migration that is unapproved or shape-invalid; any other migration lacking dedicated owner approval; a database change without human semantic review; destructive action, real secret, permission expansion, external write, provider call, or semantic ambiguity.
 - Any automatic-repair, ready-for-review, push, auto-merge, or merge request.
 - Any assertion that branch protection, owner-review/no-bypass, visible-field semantics, PR/head-bound approval, observer activation, or observer required-check status is established without direct evidence.
 
@@ -168,7 +177,9 @@ HEAD_SHA=
 CHANGED_FILES=
 TEST_COMMANDS_AND_EXIT_CODES=
 CI_STATUS=
+REQUESTED_AUTOMATED_REPAIR_LIMIT=0
 AUTO_FIX_ROUND_COUNT=0
+HUMAN_CORRECTION_ROUND_COUNT=UNVERIFIED_FROM_READ_ONLY_GITHUB_METADATA
 P2_STATUS=LOCKED|DRAFT_ONLY
 OPERATION_PATH=
 OUTPUT_PATH=

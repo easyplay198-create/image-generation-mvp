@@ -257,6 +257,7 @@ test('accepts an owner-bound P2 task only as Draft-only observer evidence', () =
   assert.equal(result.p2Status, 'DRAFT_ONLY');
   assert.equal(result.autoFixWrite, 'DISABLED');
   assert.equal(result.autoMerge, 'DISABLED');
+  assert.equal(result.effectiveAutoFixLimit, 0);
   assert.equal(
     result.humanActionRequired,
     'KEEP_DRAFT;HUMAN_SEMANTIC_REVIEW;DO_NOT_MERGE_BY_AUTOMATION',
@@ -315,6 +316,241 @@ test('P2 contract, approval, owner, and branch bindings fail closed', () => {
   const wrongBranch = makeSnapshot({ taskClass: 'P2_IMPLEMENTATION', phase: 'P2_DRAFT_ONLY' });
   wrongBranch.pr.head.ref = 'issue-21-other-branch';
   assert.match(holdReason(wrongBranch), /P2_PR_HEAD_REF_NOT_AUTHORIZED/u);
+});
+
+test('accepts exact P2 database file shape while migration semantics remain unverified', () => {
+  const migrationPath = 'prisma/migrations/20260828010101_p2_core/migration.sql';
+  const allowedPaths = [
+    'prisma/schema.prisma',
+    migrationPath,
+    'tests/integration/p2-core.test.ts',
+  ];
+  const result = evaluateControlSnapshot(makeSnapshot({
+    taskClass: 'P2_IMPLEMENTATION',
+    phase: 'P2_DRAFT_ONLY',
+    allowedPaths,
+    changedFiles: [
+      {
+        filename: 'prisma/schema.prisma', previousFilename: null, status: 'modified',
+        mode: '100644', previousMode: '100644',
+      },
+      {
+        filename: migrationPath, previousFilename: null, status: 'added',
+        mode: '100644', previousMode: null,
+      },
+      {
+        filename: 'tests/integration/p2-core.test.ts', previousFilename: null, status: 'added',
+        mode: '100644', previousMode: null,
+      },
+    ],
+  }));
+  assert.equal(result.result, 'PASS');
+  assert.equal(result.p2Status, 'DRAFT_ONLY');
+  assert.equal(result.databaseChange, 'SINGLE_MIGRATION_METADATA_SHAPE_ONLY');
+  assert.equal(result.unverifiedItems.includes('P2_DATABASE_MIGRATION_SEMANTICS'), true);
+});
+
+test('P2 database shape rejects missing pairs, multiple migrations, and mutable history', () => {
+  const schema = {
+    filename: 'prisma/schema.prisma', previousFilename: null, status: 'modified',
+    mode: '100644', previousMode: '100644',
+  };
+  const migration = {
+    filename: 'prisma/migrations/20260828010101_p2_core/migration.sql',
+    previousFilename: null,
+    status: 'added',
+    mode: '100644',
+    previousMode: null,
+  };
+  const p2Snapshot = (changedFiles) => makeSnapshot({
+    taskClass: 'P2_IMPLEMENTATION',
+    phase: 'P2_DRAFT_ONLY',
+    allowedPaths: changedFiles.map((file) => file.filename),
+    changedFiles,
+  });
+
+  assert.match(
+    holdReason(p2Snapshot([migration])),
+    /P2_DATABASE_SCHEMA_CHANGE_SHAPE_INVALID/u,
+  );
+  assert.match(
+    holdReason(p2Snapshot([schema])),
+    /P2_DATABASE_MIGRATION_COUNT_INVALID/u,
+  );
+  assert.match(
+    holdReason(p2Snapshot([
+      schema,
+      migration,
+      {
+        ...migration,
+        filename: 'prisma/migrations/20260828010102_p2_more/migration.sql',
+      },
+    ])),
+    /P2_DATABASE_MIGRATION_COUNT_INVALID/u,
+  );
+  assert.match(
+    holdReason(p2Snapshot([
+      schema,
+      { ...migration, status: 'modified', previousMode: '100644' },
+    ])),
+    /P2_DATABASE_MIGRATION_SHAPE_INVALID/u,
+  );
+  assert.match(
+    holdReason(p2Snapshot([
+      schema,
+      { ...migration, filename: 'prisma/migrations/20260828010101_core/migration.sql' },
+    ])),
+    /P2_DATABASE_MIGRATION_SHAPE_INVALID/u,
+  );
+  assert.match(
+    holdReason(p2Snapshot([
+      schema,
+      migration,
+      {
+        filename: 'prisma/migrations/migration_lock.toml', previousFilename: null,
+        status: 'modified', mode: '100644', previousMode: '100644',
+      },
+    ])),
+    /P2_DATABASE_MIGRATION_COUNT_INVALID/u,
+  );
+  assert.match(
+    holdReason(p2Snapshot([schema, migration])),
+    /P2_DATABASE_TEST_PATH_REQUIRED/u,
+  );
+  assert.match(
+    holdReason(p2Snapshot([
+      { ...schema, mode: '100755' },
+      migration,
+      {
+        filename: 'tests/integration/p2-core.test.ts', previousFilename: null,
+        status: 'added', mode: '100644', previousMode: null,
+      },
+    ])),
+    /P2_DATABASE_SCHEMA_CHANGE_SHAPE_INVALID/u,
+  );
+  for (const invalidSchema of [
+    { ...schema, previousMode: '100755' },
+    { ...schema, status: 'removed', mode: null },
+    {
+      ...schema,
+      filename: 'prisma/schema-next.prisma',
+      previousFilename: 'prisma/schema.prisma',
+      status: 'renamed',
+    },
+  ]) {
+    const files = [
+      invalidSchema,
+      migration,
+      {
+        filename: 'tests/integration/p2-core.test.ts', previousFilename: null,
+        status: 'added', mode: '100644', previousMode: null,
+      },
+    ];
+    const snapshot = p2Snapshot(files);
+    if (invalidSchema.previousFilename) snapshot.issue.body = marker('CONTROL_PLANE_V2_CONTRACT', {
+      ...extractMarkedJson(snapshot.issue.body, 'CONTROL_PLANE_V2_CONTRACT'),
+      allowedPaths: [...snapshot.changedFiles.map((file) => file.filename), invalidSchema.previousFilename],
+    });
+    if (invalidSchema.previousFilename) {
+      const contract = extractMarkedJson(snapshot.issue.body, 'CONTROL_PLANE_V2_CONTRACT');
+      const digest = sha256Text(snapshot.issue.body);
+      const approval = extractMarkedJson(
+        snapshot.issueComments[0].body,
+        'CONTROL_PLANE_V2_APPROVAL',
+      );
+      approval.issueBodySha256 = digest;
+      snapshot.issueComments[0].body = marker('CONTROL_PLANE_V2_APPROVAL', approval);
+      const link = extractMarkedJson(snapshot.pr.body, 'CONTROL_PLANE_V2_LINK');
+      link.issueBodySha256 = digest;
+      snapshot.pr.body = marker('CONTROL_PLANE_V2_LINK', link);
+      assert.equal(contract.allowedPaths.includes(invalidSchema.previousFilename), true);
+    }
+    assert.match(holdReason(snapshot), /P2_DATABASE_SCHEMA_CHANGE_SHAPE_INVALID/u);
+  }
+
+  for (const invalidMigration of [
+    { ...migration, mode: '100755' },
+    { ...migration, status: 'removed', mode: null, previousMode: '100644' },
+  ]) {
+    assert.match(
+      holdReason(p2Snapshot([
+        schema,
+        invalidMigration,
+        {
+          filename: 'tests/integration/p2-core.test.ts', previousFilename: null,
+          status: 'added', mode: '100644', previousMode: null,
+        },
+      ])),
+      /P2_DATABASE_MIGRATION_SHAPE_INVALID/u,
+    );
+  }
+
+  const renamedMigration = {
+    ...migration,
+    filename: 'prisma/migrations/20260828010102_p2_core/migration.sql',
+    previousFilename: migration.filename,
+    status: 'renamed',
+    previousMode: '100644',
+  };
+  const renamedSnapshot = p2Snapshot([
+    schema,
+    renamedMigration,
+    {
+      filename: 'tests/integration/p2-core.test.ts', previousFilename: null,
+      status: 'added', mode: '100644', previousMode: null,
+    },
+  ]);
+  const renamedContract = extractMarkedJson(
+    renamedSnapshot.issue.body,
+    'CONTROL_PLANE_V2_CONTRACT',
+  );
+  renamedContract.allowedPaths.push(migration.filename);
+  renamedSnapshot.issue.body = marker('CONTROL_PLANE_V2_CONTRACT', renamedContract);
+  const renamedDigest = sha256Text(renamedSnapshot.issue.body);
+  const renamedApproval = extractMarkedJson(
+    renamedSnapshot.issueComments[0].body,
+    'CONTROL_PLANE_V2_APPROVAL',
+  );
+  renamedApproval.issueBodySha256 = renamedDigest;
+  renamedSnapshot.issueComments[0].body = marker(
+    'CONTROL_PLANE_V2_APPROVAL',
+    renamedApproval,
+  );
+  const renamedLink = extractMarkedJson(renamedSnapshot.pr.body, 'CONTROL_PLANE_V2_LINK');
+  renamedLink.issueBodySha256 = renamedDigest;
+  renamedSnapshot.pr.body = marker('CONTROL_PLANE_V2_LINK', renamedLink);
+  assert.match(
+    holdReason(renamedSnapshot),
+    /P2_DATABASE_MIGRATION_SHAPE_INVALID/u,
+  );
+
+  assert.match(
+    holdReason(p2Snapshot([
+      schema,
+      migration,
+      {
+        filename: 'prisma/seed.ts', previousFilename: null, status: 'added',
+        mode: '100644', previousMode: null,
+      },
+      {
+        filename: 'tests/integration/p2-core.test.ts', previousFilename: null,
+        status: 'added', mode: '100644', previousMode: null,
+      },
+    ])),
+    /P2_DATABASE_EXTRA_PRISMA_PATH/u,
+  );
+
+  assert.match(
+    holdReason(p2Snapshot([
+      schema,
+      migration,
+      {
+        filename: 'tests/integration/p2-core.test.ts', previousFilename: null,
+        status: 'removed', mode: null, previousMode: '100644',
+      },
+    ])),
+    /P2_DATABASE_TEST_PATH_REQUIRED/u,
+  );
 });
 
 test('allows a historical locked approval before the current P2 approval', () => {
@@ -1147,22 +1383,43 @@ test('structured PASS reports exact operation and output paths', () => {
     output,
     new RegExp(`^OUTPUT_PATH=https://github\\.com/${POLICY.repositoryFullName}/pull/19$`, 'mu'),
   );
+  assert.match(output, /^REQUESTED_AUTOMATED_REPAIR_LIMIT=0$/mu);
+  assert.match(
+    output,
+    /^HUMAN_CORRECTION_ROUND_COUNT=UNVERIFIED_FROM_READ_ONLY_GITHUB_METADATA$/mu,
+  );
 });
 
 test('P2 templates and governance freeze Draft-only task-scoped entry', async () => {
-  const [issueTemplate, prTemplate, p2Governance, evaluator] = await Promise.all([
+  const [agents, issueTemplate, prTemplate, controlGovernance, p2Governance, evaluator] =
+    await Promise.all([
+    readFile(new URL('../../AGENTS.md', import.meta.url), 'utf8'),
     readFile(new URL('../ISSUE_TEMPLATE/codex-development-task.yml', import.meta.url), 'utf8'),
     readFile(new URL('../pull_request_template.md', import.meta.url), 'utf8'),
+    readFile(
+      new URL('../../docs/governance/GITHUB_AUTONOMOUS_DEVELOPMENT_CONTROL_PLANE_V2.md', import.meta.url),
+      'utf8',
+    ),
     readFile(new URL('../../docs/governance/V5_P2_ENTRY_GOVERNANCE.md', import.meta.url), 'utf8'),
     readFile(new URL('./autonomous-control-gate-v2.mjs', import.meta.url), 'utf8'),
   ]);
   assert.match(issueTemplate, /P2_IMPLEMENTATION/u);
   assert.match(issueTemplate, /P2_DRAFT_ONLY/u);
   assert.match(issueTemplate, /authorizedHeadRef/u);
+  assert.match(issueTemplate, /P2 additive schema plus exactly one new migration/u);
   assert.match(prTemplate, /keep the PR Draft/u);
+  assert.match(prTemplate, /HUMAN_CORRECTION_ROUND_COUNT/u);
+  assert.match(prTemplate, /REQUESTED_AUTOMATED_REPAIR_LIMIT/u);
   assert.match(p2Governance, /P2 implementation has not started/u);
   assert.match(p2Governance, /P2_DRAFT_ONLY/u);
   assert.match(p2Governance, /maxRepairRounds": 0/u);
+  assert.match(p2Governance, /exactly one new `prisma\/migrations\/<14-digit timestamp>_p2_/u);
+  assert.match(p2Governance, /P2_DATABASE_MIGRATION_SEMANTICS/u);
+  assert.match(p2Governance, /REQUESTED_AUTOMATED_REPAIR_LIMIT=0/u);
+  assert.match(controlGovernance, /Task-scoped P2 additive database exception/u);
+  assert.match(controlGovernance, /REQUESTED_AUTOMATED_REPAIR_LIMIT=0/u);
+  assert.match(agents, /at most one human-orchestrated corrective update/u);
+  assert.match(agents, /REQUESTED_AUTOMATED_REPAIR_LIMIT/u);
   assert.match(p2Governance, /DO_NOT_MERGE_BY_AUTOMATION/u);
   assert.match(evaluator, /pulls\?state=all&head=/u);
 });
