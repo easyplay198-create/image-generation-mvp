@@ -54,6 +54,29 @@ enum SourceSnapshotLifecycleStatus {
   DELETED
 }
 
+enum ProductTruthContinuity {
+  SAME_PRODUCT
+  DIFFERENT_PRODUCT
+  REVIEW_REQUIRED
+}
+
+enum ProductTruthRevisionStatus {
+  DRAFT
+  ACTIVE
+  SUPERSEDED
+  INVALIDATED
+}
+
+enum TruthRevisionSourceRole {
+  PRODUCT_PRIMARY
+  PRODUCT_SUPPORTING
+}
+
+enum TruthRevisionLinkStatus {
+  ACTIVE
+  INVALIDATED
+}
+
 enum ProjectStatus {
   DRAFT
   ACTIVE
@@ -143,6 +166,9 @@ model Membership {
   revokedByActor   UserActor?       @relation("MembershipRevoker", fields: [revokedByActorId], references: [userActorId], onDelete: Restrict, onUpdate: Cascade)
   createdProductProjects ProductProject[] @relation("ProductProjectCreatorMembership")
   createdSourceSnapshots SourceSnapshot[] @relation("SourceSnapshotCreatorMembership")
+  createdProductTruthRevisions ProductTruthRevision[] @relation("ProductTruthRevisionCreatorMembership")
+  createdTruthRevisionSourceLinks TruthRevisionSourceLink[] @relation("TruthRevisionSourceLinkCreatorMembership")
+  p2DomainEvents P2DomainEvent[] @relation("P2DomainEventActorMembership")
 
   @@unique([workspaceId, userActorId])
   @@index([userActorId, status])
@@ -155,12 +181,16 @@ model ProductProject {
   skuIdentityKey    String
   displayName       String
   status            ProductProjectStatus
+  activeTruthRevisionId String?
   createdByActorId  String
   archivedAt        DateTime?
   createdAt         DateTime             @default(now())
   workspace         Workspace            @relation(fields: [workspaceId], references: [workspaceId], onDelete: Restrict, onUpdate: Cascade)
   creatorMembership Membership           @relation("ProductProjectCreatorMembership", fields: [workspaceId, createdByActorId], references: [workspaceId, userActorId], onDelete: Restrict, onUpdate: Cascade)
   sourceSnapshots   SourceSnapshot[]
+  truthRevisions    ProductTruthRevision[] @relation("ProductProjectTruthRevisions")
+  activeTruthRevision ProductTruthRevision? @relation("ActiveProductTruthRevision", fields: [workspaceId, projectId, activeTruthRevisionId], references: [workspaceId, projectId, productTruthRevisionId], onDelete: Restrict, onUpdate: Cascade)
+  p2DomainEvents    P2DomainEvent[]
 
   @@unique([workspaceId, projectId])
   @@unique([workspaceId, skuIdentityKey])
@@ -183,10 +213,83 @@ model SourceSnapshot {
   createdByActorId  String
   productProject    ProductProject                 @relation(fields: [workspaceId, projectId], references: [workspaceId, projectId], onDelete: Restrict, onUpdate: Cascade)
   creatorMembership Membership                     @relation("SourceSnapshotCreatorMembership", fields: [workspaceId, createdByActorId], references: [workspaceId, userActorId], onDelete: Restrict, onUpdate: Cascade)
+  truthRevisionSourceLinks TruthRevisionSourceLink[]
 
+  @@unique([workspaceId, projectId, sourceSnapshotId])
   @@index([workspaceId, projectId, capturedAt])
   @@index([workspaceId, projectId, contentDigest])
   @@index([createdByActorId])
+}
+
+model ProductTruthRevision {
+  productTruthRevisionId String                     @id
+  workspaceId            String
+  projectId              String
+  revisionNumber         Int
+  truthBody              Json
+  productContinuity      ProductTruthContinuity
+  status                 ProductTruthRevisionStatus
+  parentRevisionId       String?
+  createdByActorId       String
+  activatedAt            DateTime?
+  supersededAt           DateTime?
+  invalidatedAt          DateTime?
+  createdAt              DateTime                   @default(now())
+  productProject         ProductProject             @relation("ProductProjectTruthRevisions", fields: [workspaceId, projectId], references: [workspaceId, projectId], onDelete: Restrict, onUpdate: Cascade)
+  activeForProjects      ProductProject[]           @relation("ActiveProductTruthRevision")
+  parentRevision         ProductTruthRevision?      @relation("ProductTruthRevisionParent", fields: [workspaceId, projectId, parentRevisionId], references: [workspaceId, projectId, productTruthRevisionId], onDelete: Restrict, onUpdate: Cascade)
+  childRevisions         ProductTruthRevision[]     @relation("ProductTruthRevisionParent")
+  creatorMembership      Membership                 @relation("ProductTruthRevisionCreatorMembership", fields: [workspaceId, createdByActorId], references: [workspaceId, userActorId], onDelete: Restrict, onUpdate: Cascade)
+  sourceLinks            TruthRevisionSourceLink[]
+
+  @@unique([workspaceId, projectId, productTruthRevisionId])
+  @@unique([workspaceId, projectId, revisionNumber])
+  @@index([workspaceId, projectId, status, revisionNumber])
+  @@index([createdByActorId])
+  @@index([parentRevisionId])
+}
+
+model TruthRevisionSourceLink {
+  linkId                 String                   @id
+  workspaceId            String
+  projectId              String
+  productTruthRevisionId String
+  sourceSnapshotId       String
+  sourceRole             TruthRevisionSourceRole
+  sortOrder              Int
+  linkStatus             TruthRevisionLinkStatus
+  createdByActorId       String
+  createdAt              DateTime                 @default(now())
+  productTruthRevision   ProductTruthRevision     @relation(fields: [workspaceId, projectId, productTruthRevisionId], references: [workspaceId, projectId, productTruthRevisionId], onDelete: Restrict, onUpdate: Cascade)
+  sourceSnapshot         SourceSnapshot           @relation(fields: [workspaceId, projectId, sourceSnapshotId], references: [workspaceId, projectId, sourceSnapshotId], onDelete: Restrict, onUpdate: Cascade)
+  creatorMembership      Membership               @relation("TruthRevisionSourceLinkCreatorMembership", fields: [workspaceId, createdByActorId], references: [workspaceId, userActorId], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([productTruthRevisionId, sourceSnapshotId])
+  @@unique([productTruthRevisionId, sortOrder])
+  @@index([workspaceId, projectId, sourceSnapshotId])
+  @@index([createdByActorId])
+}
+
+model P2DomainEvent {
+  eventId            String         @id
+  eventType          String
+  eventSchemaVersion Int
+  occurredAt         DateTime       @default(now())
+  workspaceId        String
+  projectId          String
+  actorType          String
+  actorId            String
+  requestId          String
+  correlationId      String
+  sourceCommit       String
+  productVersion     String
+  eventBody          Json
+  productProject     ProductProject @relation(fields: [workspaceId, projectId], references: [workspaceId, projectId], onDelete: Restrict, onUpdate: Cascade)
+  actorMembership    Membership     @relation("P2DomainEventActorMembership", fields: [workspaceId, actorId], references: [workspaceId, userActorId], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([workspaceId, projectId, occurredAt])
+  @@index([workspaceId, requestId])
+  @@index([actorId])
 }
 
 model Project {
