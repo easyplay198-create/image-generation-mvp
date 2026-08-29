@@ -421,6 +421,130 @@ describe.sequential("P2 S1C scoped product truth activation", () => {
     ).resolves.toBe(0);
   });
 
+  it("rechecks primary-source eligibility at explicit activation", async () => {
+    const actionFixture = await createScopedProjectAndSource(
+      "activation-action-required",
+      primaryResolver,
+      P2_TEST_IDENTITY,
+    );
+    const actionDraft = await createP2ProductTruthRevision(
+      database,
+      draftInput(actionFixture.projectId, actionFixture.sourceSnapshotId),
+      primaryResolver,
+    );
+    await database.sourceSnapshot.update({
+      where: { sourceSnapshotId: actionFixture.sourceSnapshotId },
+      data: { validationStatus: "ACTION_REQUIRED" },
+    });
+
+    await expect(
+      activateP2ProductTruthRevision(
+        database,
+        activationInput(
+          actionFixture.projectId,
+          actionDraft.revision.productTruthRevisionId,
+          null,
+          "activation-action-required",
+        ),
+        primaryResolver,
+      ),
+    ).rejects.toMatchObject({ code: "SOURCE_ACTION_REQUIRED" });
+
+    const revokedFixture = await createScopedProjectAndSource(
+      "activation-revoked",
+      primaryResolver,
+      P2_TEST_IDENTITY,
+    );
+    const revokedDraft = await createP2ProductTruthRevision(
+      database,
+      draftInput(revokedFixture.projectId, revokedFixture.sourceSnapshotId),
+      primaryResolver,
+    );
+    await database.sourceSnapshot.update({
+      where: { sourceSnapshotId: revokedFixture.sourceSnapshotId },
+      data: { lifecycleStatus: "DELETED" },
+    });
+
+    await expect(
+      activateP2ProductTruthRevision(
+        database,
+        activationInput(
+          revokedFixture.projectId,
+          revokedDraft.revision.productTruthRevisionId,
+          null,
+          "activation-revoked",
+        ),
+        primaryResolver,
+      ),
+    ).rejects.toMatchObject({ code: "SOURCE_REVOKED" });
+
+    for (const fixture of [
+      {
+        projectId: actionFixture.projectId,
+        truthRevisionId: actionDraft.revision.productTruthRevisionId,
+      },
+      {
+        projectId: revokedFixture.projectId,
+        truthRevisionId: revokedDraft.revision.productTruthRevisionId,
+      },
+    ]) {
+      await expect(
+        database.productProject.findUniqueOrThrow({
+          where: { projectId: fixture.projectId },
+        }),
+      ).resolves.toMatchObject({ activeTruthRevisionId: null });
+      await expect(
+        database.productTruthRevision.findUniqueOrThrow({
+          where: { productTruthRevisionId: fixture.truthRevisionId },
+        }),
+      ).resolves.toMatchObject({ status: "DRAFT", activatedAt: null });
+      await expect(
+        database.p2DomainEvent.count({ where: { projectId: fixture.projectId } }),
+      ).resolves.toBe(0);
+    }
+  });
+
+  it("rolls back activation state when event persistence fails", async () => {
+    const fixture = await createScopedProjectAndSource(
+      "activation-rollback",
+      primaryResolver,
+      P2_TEST_IDENTITY,
+    );
+    const draft = await createP2ProductTruthRevision(
+      database,
+      draftInput(fixture.projectId, fixture.sourceSnapshotId),
+      primaryResolver,
+    );
+    const injectedFailure = new Error("injected activation-event failure");
+
+    await expect(
+      activateP2ProductTruthRevision(
+        withFailingEventCreate(database, injectedFailure),
+        activationInput(
+          fixture.projectId,
+          draft.revision.productTruthRevisionId,
+          null,
+          "activation-rollback",
+        ),
+        primaryResolver,
+      ),
+    ).rejects.toBe(injectedFailure);
+
+    await expect(
+      database.productProject.findUniqueOrThrow({
+        where: { projectId: fixture.projectId },
+      }),
+    ).resolves.toMatchObject({ activeTruthRevisionId: null });
+    await expect(
+      database.productTruthRevision.findUniqueOrThrow({
+        where: { productTruthRevisionId: draft.revision.productTruthRevisionId },
+      }),
+    ).resolves.toMatchObject({ status: "DRAFT", activatedAt: null });
+    await expect(
+      database.p2DomainEvent.count({ where: { projectId: fixture.projectId } }),
+    ).resolves.toBe(0);
+  });
+
   it("enforces scoped foreign keys, active-pointer integrity, immutability, and append-only events", async () => {
     const firstLink = await database.truthRevisionSourceLink.findFirstOrThrow({
       where: { productTruthRevisionId: firstTruthRevisionId },
@@ -428,6 +552,83 @@ describe.sequential("P2 S1C scoped product truth activation", () => {
     const firstEvent = await database.p2DomainEvent.findFirstOrThrow({
       where: { projectId: primaryProjectId },
     });
+    const latestRevision = await database.productTruthRevision.aggregate({
+      where: { projectId: primaryProjectId },
+      _max: { revisionNumber: true },
+    });
+    const nextRevisionNumber = (latestRevision._max.revisionNumber ?? 0) + 1;
+    const terminalRevisionId = uniqueId("terminal-revision");
+
+    await database.productTruthRevision.create({
+      data: {
+        productTruthRevisionId: terminalRevisionId,
+        workspaceId: P2_TEST_IDENTITY.workspaceId,
+        projectId: primaryProjectId,
+        revisionNumber: nextRevisionNumber,
+        truthBody: { name: "Terminal transition evidence" },
+        productContinuity: "SAME_PRODUCT",
+        status: "DRAFT",
+        parentRevisionId: secondTruthRevisionId,
+        createdByActorId: P2_TEST_IDENTITY.userActorId,
+      },
+    });
+    await database.productTruthRevision.update({
+      where: { productTruthRevisionId: terminalRevisionId },
+      data: { status: "INVALIDATED", invalidatedAt: new Date() },
+    });
+    await expect(
+      database.productTruthRevision.update({
+        where: { productTruthRevisionId: terminalRevisionId },
+        data: { status: "DRAFT", invalidatedAt: null },
+      }),
+    ).rejects.toBeTruthy();
+    await expect(
+      database.productTruthRevision.update({
+        where: { productTruthRevisionId: terminalRevisionId },
+        data: { invalidatedAt: new Date() },
+      }),
+    ).rejects.toBeTruthy();
+
+    await expect(
+      database.productTruthRevision.create({
+        data: {
+          productTruthRevisionId: uniqueId("duplicate-active-revision"),
+          workspaceId: P2_TEST_IDENTITY.workspaceId,
+          projectId: primaryProjectId,
+          revisionNumber: nextRevisionNumber + 1,
+          truthBody: { name: "Duplicate active evidence" },
+          productContinuity: "SAME_PRODUCT",
+          status: "ACTIVE",
+          parentRevisionId: secondTruthRevisionId,
+          createdByActorId: P2_TEST_IDENTITY.userActorId,
+          activatedAt: new Date(),
+        },
+      }),
+    ).rejects.toBeTruthy();
+
+    await expect(
+      database.p2DomainEvent.create({
+        data: {
+          eventId: uniqueId("non-canonical-event"),
+          eventType: "truth_revision.activated.v1",
+          eventSchemaVersion: 1,
+          workspaceId: P2_TEST_IDENTITY.workspaceId,
+          projectId: primaryProjectId,
+          actorType: "USER_ACTOR",
+          actorId: P2_TEST_IDENTITY.userActorId,
+          requestId: " padded-request ",
+          correlationId: "canonical-correlation",
+          sourceCommit: SOURCE_COMMIT,
+          productVersion: PRODUCT_VERSION,
+          eventBody: {
+            truthRevisionId: secondTruthRevisionId,
+            parentRevisionId: firstTruthRevisionId,
+            previousActiveTruthRevisionId: firstTruthRevisionId,
+            projectId: primaryProjectId,
+          },
+        },
+      }),
+    ).rejects.toBeTruthy();
 
     await expect(
       database.productTruthRevision.update({
@@ -707,6 +908,33 @@ function withFailingSourceLinkCreate(
             return {
               ...target.truthRevisionSourceLink,
               createMany: async () => {
+                throw injectedFailure;
+              },
+            };
+          }
+          const value = Reflect.get(target, property, receiver);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+      return operation(proxy);
+    }),
+  } as unknown as DatabaseClient;
+}
+
+function withFailingEventCreate(
+  realDatabase: DatabaseClient,
+  injectedFailure: Error,
+): DatabaseClient {
+  return {
+    $transaction: async (
+      operation: (transaction: TransactionClient) => Promise<unknown>,
+    ) => realDatabase.$transaction(async (transaction) => {
+      const proxy = new Proxy(transaction, {
+        get(target, property, receiver) {
+          if (property === "p2DomainEvent") {
+            return {
+              ...target.p2DomainEvent,
+              create: async () => {
                 throw injectedFailure;
               },
             };

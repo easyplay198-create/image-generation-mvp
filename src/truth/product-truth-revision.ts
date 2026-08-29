@@ -126,6 +126,13 @@ type ParsedSourceBinding = Readonly<{
   sortOrder: number;
 }>;
 
+type LockedProductSource = {
+  sourceSnapshotId: string;
+  sourceKind: string;
+  validationStatus: string;
+  lifecycleStatus: string;
+};
+
 type LockedProductProject = {
   projectId: string;
   workspaceId: string;
@@ -181,21 +188,12 @@ export async function createP2ProductTruthRevision(
       assertExpectedRevision(project, expectedCurrentRevisionId);
       assertParentRevision(project, parentRevisionId);
 
-      const snapshots = await transaction.sourceSnapshot.findMany({
-        where: {
-          workspaceId: context.workspaceId,
-          projectId,
-          sourceSnapshotId: {
-            in: sourceBindings.map(({ sourceSnapshotId }) => sourceSnapshotId),
-          },
-        },
-        select: {
-          sourceSnapshotId: true,
-          sourceKind: true,
-          validationStatus: true,
-          lifecycleStatus: true,
-        },
-      });
+      const snapshots = await lockProductSources(
+        transaction,
+        context.workspaceId,
+        projectId,
+        sourceBindings.map(({ sourceSnapshotId }) => sourceSnapshotId),
+      );
       assertEligibleSources(sourceBindings, snapshots);
 
       const latestRevision = await transaction.productTruthRevision.aggregate({
@@ -294,37 +292,13 @@ export async function activateP2ProductTruthRevision(
         throw revisionConflict();
       }
 
-      const activePrimaryLinks =
-        await transaction.truthRevisionSourceLink.findMany({
-          where: {
-            workspaceId: context.workspaceId,
-            projectId,
-            productTruthRevisionId: truthRevisionId,
-            sourceRole: "PRODUCT_PRIMARY",
-            linkStatus: "ACTIVE",
-          },
-          select: {
-            sourceSnapshot: {
-              select: {
-                sourceKind: true,
-                validationStatus: true,
-                lifecycleStatus: true,
-              },
-            },
-          },
-        });
-      if (activePrimaryLinks.length === 0) throw sourceRevoked();
-      for (const { sourceSnapshot } of activePrimaryLinks) {
-        if (
-          sourceSnapshot.sourceKind !== "PRODUCT_SOURCE" ||
-          sourceSnapshot.lifecycleStatus !== "ACTIVE"
-        ) {
-          throw sourceRevoked();
-        }
-        if (sourceSnapshot.validationStatus !== "VALID") {
-          throw sourceActionRequired();
-        }
-      }
+      const activePrimarySources = await lockActivePrimarySources(
+        transaction,
+        context.workspaceId,
+        projectId,
+        truthRevisionId,
+      );
+      assertEligiblePrimarySource(activePrimarySources);
 
       const previous = project.activeTruthRevisionId
         ? await transaction.productTruthRevision.findFirst({
@@ -453,6 +427,52 @@ async function lockWritableProject(
   return project;
 }
 
+async function lockProductSources(
+  transaction: TransactionClient,
+  workspaceId: string,
+  projectId: string,
+  sourceSnapshotIds: readonly string[],
+): Promise<LockedProductSource[]> {
+  return transaction.$queryRaw<LockedProductSource[]>(Prisma.sql`
+    SELECT
+      source_snapshot."sourceSnapshotId" AS "sourceSnapshotId",
+      source_snapshot."sourceKind"::text AS "sourceKind",
+      source_snapshot."validationStatus"::text AS "validationStatus",
+      source_snapshot."lifecycleStatus"::text AS "lifecycleStatus"
+    FROM "SourceSnapshot" AS source_snapshot
+    WHERE source_snapshot."workspaceId" = ${workspaceId}
+      AND source_snapshot."projectId" = ${projectId}
+      AND source_snapshot."sourceSnapshotId" IN (${Prisma.join(sourceSnapshotIds)})
+    FOR SHARE OF source_snapshot
+  `);
+}
+
+async function lockActivePrimarySources(
+  transaction: TransactionClient,
+  workspaceId: string,
+  projectId: string,
+  truthRevisionId: string,
+): Promise<LockedProductSource[]> {
+  return transaction.$queryRaw<LockedProductSource[]>(Prisma.sql`
+    SELECT
+      source_snapshot."sourceSnapshotId" AS "sourceSnapshotId",
+      source_snapshot."sourceKind"::text AS "sourceKind",
+      source_snapshot."validationStatus"::text AS "validationStatus",
+      source_snapshot."lifecycleStatus"::text AS "lifecycleStatus"
+    FROM "TruthRevisionSourceLink" AS source_link
+    INNER JOIN "SourceSnapshot" AS source_snapshot
+      ON source_snapshot."workspaceId" = source_link."workspaceId"
+     AND source_snapshot."projectId" = source_link."projectId"
+     AND source_snapshot."sourceSnapshotId" = source_link."sourceSnapshotId"
+    WHERE source_link."workspaceId" = ${workspaceId}
+      AND source_link."projectId" = ${projectId}
+      AND source_link."productTruthRevisionId" = ${truthRevisionId}
+      AND source_link."sourceRole" = 'PRODUCT_PRIMARY'
+      AND source_link."linkStatus" = 'ACTIVE'
+    FOR SHARE OF source_link, source_snapshot
+  `);
+}
+
 function assertExpectedRevision(
   project: LockedProductProject,
   expectedCurrentRevisionId: string | null,
@@ -500,6 +520,34 @@ function assertEligibleSources(
       throw sourceActionRequired();
     }
   }
+}
+
+function assertEligiblePrimarySource(
+  snapshots: readonly LockedProductSource[],
+): void {
+  if (
+    snapshots.some(
+      (snapshot) =>
+        snapshot.sourceKind === "PRODUCT_SOURCE" &&
+        snapshot.lifecycleStatus === "ACTIVE" &&
+        snapshot.validationStatus === "VALID",
+    )
+  ) {
+    return;
+  }
+
+  if (
+    snapshots.some(
+      (snapshot) =>
+        snapshot.sourceKind === "PRODUCT_SOURCE" &&
+        snapshot.lifecycleStatus === "ACTIVE" &&
+        snapshot.validationStatus !== "VALID",
+    )
+  ) {
+    throw sourceActionRequired();
+  }
+
+  throw sourceRevoked();
 }
 
 function parseTruthBody(input: unknown): CanonicalTruthBody {

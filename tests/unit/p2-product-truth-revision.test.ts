@@ -205,6 +205,74 @@ describe("P2 S1C product truth revisions", () => {
     });
   });
 
+  it("activates when at least one active primary source remains eligible", async () => {
+    const harness = createHarness({
+      activationPrimarySources: [
+        {
+          sourceSnapshotId: "action-required-primary",
+          sourceKind: "PRODUCT_SOURCE",
+          lifecycleStatus: "ACTIVE",
+          validationStatus: "ACTION_REQUIRED",
+        },
+        {
+          sourceSnapshotId: "valid-primary",
+          sourceKind: "PRODUCT_SOURCE",
+          lifecycleStatus: "ACTIVE",
+          validationStatus: "VALID",
+        },
+      ],
+    });
+
+    await expect(
+      activateP2ProductTruthRevision(
+        harness.database,
+        activationInput(),
+        harness.principalResolver,
+      ),
+    ).resolves.toMatchObject({
+      activatedRevision: { status: "ACTIVE" },
+    });
+    expect(harness.eventCreate).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [
+      [{
+        sourceSnapshotId: "action-required-primary",
+        sourceKind: "PRODUCT_SOURCE",
+        lifecycleStatus: "ACTIVE",
+        validationStatus: "ACTION_REQUIRED",
+      }],
+      "SOURCE_ACTION_REQUIRED",
+    ],
+    [
+      [{
+        sourceSnapshotId: "revoked-primary",
+        sourceKind: "PRODUCT_SOURCE",
+        lifecycleStatus: "DELETED",
+        validationStatus: "VALID",
+      }],
+      "SOURCE_REVOKED",
+    ],
+    [[], "SOURCE_REVOKED"],
+  ])(
+    "rejects activation without an eligible primary source (%s)",
+    async (activationPrimarySources, code) => {
+      const harness = createHarness({ activationPrimarySources });
+
+      await expect(
+        activateP2ProductTruthRevision(
+          harness.database,
+          activationInput(),
+          harness.principalResolver,
+        ),
+      ).rejects.toMatchObject({ code });
+      expect(harness.truthRevisionUpdateMany).not.toHaveBeenCalled();
+      expect(harness.projectUpdate).not.toHaveBeenCalled();
+      expect(harness.eventCreate).not.toHaveBeenCalled();
+    },
+  );
+
   it.each(["DIFFERENT_PRODUCT", "REVIEW_REQUIRED"])(
     "does not silently activate %s continuity",
     async (productContinuity) => {
@@ -295,10 +363,17 @@ function createHarness(options: {
   targetStatus?: "DRAFT" | "ACTIVE";
   productContinuity?: string;
   snapshot?: {
+    sourceSnapshotId?: string;
     sourceKind: string;
     lifecycleStatus: string;
     validationStatus: string;
   };
+  activationPrimarySources?: Array<{
+    sourceSnapshotId: string;
+    sourceKind: string;
+    lifecycleStatus: string;
+    validationStatus: string;
+  }>;
 } = {}) {
   const activeTruthRevisionId = options.activeTruthRevisionId ?? null;
   const targetTruthRevisionId = options.targetTruthRevisionId ?? "draft-truth";
@@ -314,13 +389,19 @@ function createHarness(options: {
     status: "ACTIVE",
     activatedAt: new Date("2026-08-29T01:00:00.000Z"),
   });
-  let rawQueryCount = 0;
-  const queryRaw = vi.fn(async () => {
-    rawQueryCount += 1;
-    if (rawQueryCount % 3 === 1) {
+  const defaultSource = {
+    sourceSnapshotId: options.snapshot?.sourceSnapshotId ?? SOURCE_ID,
+    sourceKind: options.snapshot?.sourceKind ?? "PRODUCT_SOURCE",
+    validationStatus: options.snapshot?.validationStatus ?? "VALID",
+    lifecycleStatus: options.snapshot?.lifecycleStatus ?? "ACTIVE",
+  };
+  const queryRaw = vi.fn(async (query: unknown): Promise<unknown[]> => {
+    const sql =
+      (query as { strings?: readonly string[] }).strings?.join(" ") ?? "";
+    if (sql.includes('FROM "UserActor"')) {
       return [{ userActorId: ACTOR_ID, status: "ACTIVE" }];
     }
-    if (rawQueryCount % 3 === 2) {
+    if (sql.includes('FROM "Membership"')) {
       return [{
         membershipId: MEMBERSHIP_ID,
         workspaceId: WORKSPACE_ID,
@@ -330,12 +411,21 @@ function createHarness(options: {
         workspaceStatus: "ACTIVE",
       }];
     }
-    return [{
-      projectId: PROJECT_ID,
-      workspaceId: WORKSPACE_ID,
-      status: "DRAFT",
-      activeTruthRevisionId,
-    }];
+    if (sql.includes('FROM "ProductProject"')) {
+      return [{
+        projectId: PROJECT_ID,
+        workspaceId: WORKSPACE_ID,
+        status: "DRAFT",
+        activeTruthRevisionId,
+      }];
+    }
+    if (sql.includes('FROM "TruthRevisionSourceLink"')) {
+      return options.activationPrimarySources ?? [defaultSource];
+    }
+    if (sql.includes('FROM "SourceSnapshot"')) {
+      return [defaultSource];
+    }
+    throw new Error(`Unexpected unit SQL query: ${sql}`);
   });
 
   const truthRevisionCreate = vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
@@ -354,14 +444,6 @@ function createHarness(options: {
 
   const transaction = {
     $queryRaw: queryRaw,
-    sourceSnapshot: {
-      findMany: vi.fn(async () => [{
-        sourceSnapshotId: SOURCE_ID,
-        sourceKind: options.snapshot?.sourceKind ?? "PRODUCT_SOURCE",
-        validationStatus: options.snapshot?.validationStatus ?? "VALID",
-        lifecycleStatus: options.snapshot?.lifecycleStatus ?? "ACTIVE",
-      }]),
-    },
     productTruthRevision: {
       aggregate: vi.fn(async () => ({ _max: { revisionNumber: null } })),
       create: truthRevisionCreate,
@@ -372,13 +454,6 @@ function createHarness(options: {
     },
     truthRevisionSourceLink: {
       createMany: sourceLinkCreateMany,
-      findMany: vi.fn(async () => [{
-        sourceSnapshot: {
-          sourceKind: options.snapshot?.sourceKind ?? "PRODUCT_SOURCE",
-          validationStatus: options.snapshot?.validationStatus ?? "VALID",
-          lifecycleStatus: options.snapshot?.lifecycleStatus ?? "ACTIVE",
-        },
-      }]),
     },
     productProject: { update: projectUpdate },
     p2DomainEvent: { create: eventCreate },

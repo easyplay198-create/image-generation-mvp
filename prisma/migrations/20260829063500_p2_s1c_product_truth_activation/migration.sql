@@ -70,6 +70,10 @@ CREATE TABLE "ProductTruthRevision" (
         OR (
             "status" = 'INVALIDATED'
             AND "invalidatedAt" IS NOT NULL
+            AND (
+                "supersededAt" IS NULL
+                OR "activatedAt" IS NOT NULL
+            )
         )
     )
 );
@@ -117,8 +121,11 @@ CREATE TABLE "P2DomainEvent" (
         CHECK ("actorType" = 'USER_ACTOR'),
     CONSTRAINT "P2DomainEvent_request_check" CHECK (
         btrim("requestId") <> ''
+        AND "requestId" = btrim("requestId")
         AND btrim("correlationId") <> ''
+        AND "correlationId" = btrim("correlationId")
         AND btrim("productVersion") <> ''
+        AND "productVersion" = btrim("productVersion")
     ),
     CONSTRAINT "P2DomainEvent_sourceCommit_check"
         CHECK ("sourceCommit" ~ '^(?:[0-9a-f]{40}|[0-9a-f]{64})$'),
@@ -326,6 +333,41 @@ BEGIN
             RAISE EXCEPTION USING
                 ERRCODE = '23514',
                 MESSAGE = 'ProductTruthRevision status transition is not allowed';
+        END IF;
+
+        IF NEW."activatedAt" IS DISTINCT FROM OLD."activatedAt"
+            AND NOT (
+                OLD."status" = 'DRAFT'
+                AND NEW."status" = 'ACTIVE'
+                AND OLD."activatedAt" IS NULL
+                AND NEW."activatedAt" IS NOT NULL
+            ) THEN
+            RAISE EXCEPTION USING
+                ERRCODE = '23514',
+                MESSAGE = 'ProductTruthRevision activation timestamp transition is not allowed';
+        END IF;
+
+        IF NEW."supersededAt" IS DISTINCT FROM OLD."supersededAt"
+            AND NOT (
+                OLD."status" = 'ACTIVE'
+                AND NEW."status" = 'SUPERSEDED'
+                AND OLD."supersededAt" IS NULL
+                AND NEW."supersededAt" IS NOT NULL
+            ) THEN
+            RAISE EXCEPTION USING
+                ERRCODE = '23514',
+                MESSAGE = 'ProductTruthRevision supersession timestamp transition is not allowed';
+        END IF;
+
+        IF NEW."invalidatedAt" IS DISTINCT FROM OLD."invalidatedAt"
+            AND NOT (
+                NEW."status" = 'INVALIDATED'
+                AND OLD."invalidatedAt" IS NULL
+                AND NEW."invalidatedAt" IS NOT NULL
+            ) THEN
+            RAISE EXCEPTION USING
+                ERRCODE = '23514',
+                MESSAGE = 'ProductTruthRevision invalidation timestamp transition is not allowed';
         END IF;
     ELSIF NEW."activatedAt" IS DISTINCT FROM OLD."activatedAt"
         OR NEW."supersededAt" IS DISTINCT FROM OLD."supersededAt"
