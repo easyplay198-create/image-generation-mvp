@@ -7,6 +7,26 @@ datasource db {
   provider = "postgresql"
 }
 
+enum UserActorStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum WorkspaceStatus {
+  ACTIVE
+  SUSPENDED
+  ARCHIVED
+}
+
+enum MembershipRole {
+  OWNER
+}
+
+enum MembershipStatus {
+  ACTIVE
+  REVOKED
+}
+
 enum ProjectStatus {
   DRAFT
   ACTIVE
@@ -51,6 +71,52 @@ enum ProviderSubmissionState {
   SUBMITTED
   AMBIGUOUS
   COMPLETED
+}
+
+model UserActor {
+  userActorId       String          @id @default(cuid())
+  authIssuer        String
+  authSubject       String
+  status            UserActorStatus
+  disabledAt        DateTime?
+  createdAt         DateTime        @default(now())
+  createdWorkspaces Workspace[]     @relation("WorkspaceCreator")
+  memberships       Membership[]    @relation("MembershipActor")
+  revokedMemberships Membership[]   @relation("MembershipRevoker")
+
+  @@unique([authIssuer, authSubject])
+}
+
+model Workspace {
+  workspaceId      String          @id @default(cuid())
+  displayName      String
+  status           WorkspaceStatus
+  createdByActorId String
+  suspendedAt      DateTime?
+  archivedAt       DateTime?
+  createdAt        DateTime        @default(now())
+  createdByActor   UserActor       @relation("WorkspaceCreator", fields: [createdByActorId], references: [userActorId], onDelete: Restrict, onUpdate: Cascade)
+  memberships      Membership[]
+
+  @@index([createdByActorId])
+}
+
+model Membership {
+  membershipId     String           @id @default(cuid())
+  workspaceId      String
+  userActorId      String
+  role             MembershipRole
+  status           MembershipStatus
+  revokedAt        DateTime?
+  revokedByActorId String?
+  createdAt        DateTime         @default(now())
+  workspace        Workspace        @relation(fields: [workspaceId], references: [workspaceId], onDelete: Restrict, onUpdate: Cascade)
+  userActor        UserActor        @relation("MembershipActor", fields: [userActorId], references: [userActorId], onDelete: Restrict, onUpdate: Cascade)
+  revokedByActor   UserActor?       @relation("MembershipRevoker", fields: [revokedByActorId], references: [userActorId], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([workspaceId, userActorId])
+  @@index([userActorId, status])
+  @@index([revokedByActorId])
 }
 
 model Project {
