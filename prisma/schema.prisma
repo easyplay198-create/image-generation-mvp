@@ -27,6 +27,33 @@ enum MembershipStatus {
   REVOKED
 }
 
+enum ProductProjectStatus {
+  DRAFT
+  ACTIVE
+  BLOCKED
+  ARCHIVED
+}
+
+enum SourceSnapshotKind {
+  PRODUCT_SOURCE
+  PRODUCT_REFERENCE
+  BRAND_REFERENCE
+  LOGO_REFERENCE
+  OTHER_REFERENCE
+}
+
+enum SourceSnapshotValidationStatus {
+  PENDING
+  VALID
+  ACTION_REQUIRED
+  INVALID
+}
+
+enum SourceSnapshotLifecycleStatus {
+  ACTIVE
+  DELETED
+}
+
 enum ProjectStatus {
   DRAFT
   ACTIVE
@@ -97,6 +124,7 @@ model Workspace {
   createdAt        DateTime        @default(now())
   createdByActor   UserActor       @relation("WorkspaceCreator", fields: [createdByActorId], references: [userActorId], onDelete: Restrict, onUpdate: Cascade)
   memberships      Membership[]
+  productProjects  ProductProject[]
 
   @@index([createdByActorId])
 }
@@ -113,10 +141,52 @@ model Membership {
   workspace        Workspace        @relation(fields: [workspaceId], references: [workspaceId], onDelete: Restrict, onUpdate: Cascade)
   userActor        UserActor        @relation("MembershipActor", fields: [userActorId], references: [userActorId], onDelete: Restrict, onUpdate: Cascade)
   revokedByActor   UserActor?       @relation("MembershipRevoker", fields: [revokedByActorId], references: [userActorId], onDelete: Restrict, onUpdate: Cascade)
+  createdProductProjects ProductProject[] @relation("ProductProjectCreatorMembership")
+  createdSourceSnapshots SourceSnapshot[] @relation("SourceSnapshotCreatorMembership")
 
   @@unique([workspaceId, userActorId])
   @@index([userActorId, status])
   @@index([revokedByActorId])
+}
+
+model ProductProject {
+  projectId         String               @id
+  workspaceId       String
+  skuIdentityKey    String
+  displayName       String
+  status            ProductProjectStatus
+  createdByActorId  String
+  archivedAt        DateTime?
+  createdAt         DateTime             @default(now())
+  workspace         Workspace            @relation(fields: [workspaceId], references: [workspaceId], onDelete: Restrict, onUpdate: Cascade)
+  creatorMembership Membership           @relation("ProductProjectCreatorMembership", fields: [workspaceId, createdByActorId], references: [workspaceId, userActorId], onDelete: Restrict, onUpdate: Cascade)
+  sourceSnapshots   SourceSnapshot[]
+
+  @@unique([workspaceId, projectId])
+  @@unique([workspaceId, skuIdentityKey])
+  @@index([workspaceId, status, createdAt])
+  @@index([createdByActorId])
+}
+
+model SourceSnapshot {
+  sourceSnapshotId  String                         @id
+  workspaceId       String
+  projectId         String
+  sourceKind        SourceSnapshotKind
+  mediaType         String
+  byteSize          BigInt
+  contentDigest     String
+  storageLocator    String
+  validationStatus  SourceSnapshotValidationStatus
+  lifecycleStatus   SourceSnapshotLifecycleStatus
+  capturedAt        DateTime                       @default(now())
+  createdByActorId  String
+  productProject    ProductProject                 @relation(fields: [workspaceId, projectId], references: [workspaceId, projectId], onDelete: Restrict, onUpdate: Cascade)
+  creatorMembership Membership                     @relation("SourceSnapshotCreatorMembership", fields: [workspaceId, createdByActorId], references: [workspaceId, userActorId], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([workspaceId, projectId, capturedAt])
+  @@index([workspaceId, projectId, contentDigest])
+  @@index([createdByActorId])
 }
 
 model Project {
