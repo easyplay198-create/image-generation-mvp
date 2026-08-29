@@ -169,6 +169,17 @@ async function runIdempotent(
     return await withP2WorkspaceMembershipScope(
       dependencies.database,
       async (transaction, context) => {
+        const scopedProject = await transaction.productProject.findFirst({
+          where: {
+            workspaceId: context.workspaceId,
+            projectId: key.projectId,
+          },
+          select: { projectId: true },
+        });
+        if (!scopedProject) {
+          throw new P2ProductTruthError("PROJECT_NOT_FOUND");
+        }
+
         const existing = await transaction.p2IdempotencyRecord.findUnique({
           where: {
             workspaceId_operation_idempotencyKey: {
@@ -209,7 +220,7 @@ async function runIdempotent(
       dependencies.principalResolver,
     );
   } catch (error) {
-    if (!isUniqueConflict(error)) throw error;
+    if (!isIdempotencyUniqueConflict(error)) throw error;
     return readConcurrentReplay(dependencies, key);
   }
 }
@@ -387,8 +398,16 @@ function responseRecord(status: number, body: Record<string, unknown>): StoredRe
   return Object.freeze({ status, body: JSON.parse(JSON.stringify(body)) as Record<string, unknown> });
 }
 
-function isUniqueConflict(error: unknown): boolean {
-  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
+function isIdempotencyUniqueConflict(error: unknown): boolean {
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") {
+    return false;
+  }
+  const target = error.meta?.target;
+  return Array.isArray(target) &&
+    target.length === 3 &&
+    target[0] === "workspaceId" &&
+    target[1] === "operation" &&
+    target[2] === "idempotencyKey";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

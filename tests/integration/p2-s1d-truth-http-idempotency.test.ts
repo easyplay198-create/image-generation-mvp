@@ -87,6 +87,20 @@ describe.sequential("P2 S1D truth HTTP idempotency", () => {
     await expect(response.json()).resolves.toMatchObject({ error: { code: "IDEMPOTENCY_CONFLICT" } });
   });
 
+  it("serializes concurrent same-key requests into one business mutation", async () => {
+    const fixture = await createProjectAndSource("concurrent");
+    const api = handlers(resolver);
+    const body = createBodyFor(fixture.sourceSnapshotId);
+    const [first, second] = await Promise.all([
+      api.create(request(body, "s1d-concurrent-key-0001"), context(fixture.projectId)),
+      api.create(request(body, "s1d-concurrent-key-0001"), context(fixture.projectId)),
+    ]);
+    expect([first.status, second.status]).toEqual([201, 201]);
+    expect(await first.json()).toEqual(await second.json());
+    await expect(database.productTruthRevision.count({ where: { projectId: fixture.projectId } })).resolves.toBe(1);
+    await expect(database.p2IdempotencyRecord.count({ where: { projectId: fixture.projectId } })).resolves.toBe(1);
+  });
+
   it("creates one activation event and exactly replays the response", async () => {
     const api = handlers(resolver);
     const created = await api.create(request(createBody(), "s1d-create-key-0002"), context(projectId));
@@ -122,6 +136,14 @@ describe.sequential("P2 S1D truth HTTP idempotency", () => {
     );
     expect(response.status).toBe(404);
     await expect(response.json()).resolves.toMatchObject({ error: { code: "PROJECT_NOT_FOUND" } });
+
+    const post = await handlers(resolverFor(other)).create(
+      request(createBody(), "s1d-cross-workspace-key-0001"),
+      context(projectId),
+    );
+    expect(post.status).toBe(404);
+    await expect(post.json()).resolves.toMatchObject({ error: { code: "PROJECT_NOT_FOUND" } });
+    await expect(database.p2IdempotencyRecord.count({ where: { idempotencyKey: "s1d-cross-workspace-key-0001" } })).resolves.toBe(0);
   });
 
   it("enforces immutable terminal response records and no legacy writes", async () => {
@@ -149,13 +171,38 @@ function handlers(principalResolver: P2WorkspacePrincipalResolver) {
 }
 
 function createBody() {
+  return createBodyFor(sourceSnapshotId);
+}
+
+function createBodyFor(sourceId: string) {
   return {
     expectedCurrentRevisionId: null,
     parentRevisionId: null,
     truthBody: { name: "Portable inflator" },
     productContinuity: "SAME_PRODUCT",
-    sourceBindings: [{ sourceSnapshotId, sourceRole: "PRODUCT_PRIMARY", sortOrder: 0 }],
+    sourceBindings: [{ sourceSnapshotId: sourceId, sourceRole: "PRODUCT_PRIMARY", sortOrder: 0 }],
   };
+}
+
+async function createProjectAndSource(label: string) {
+  const project = await createP2ProductProject(database, { displayName: `P2 S1D ${label}` }, resolver);
+  const sourceId = `p2_test_s1d_${label}_${crypto.randomUUID()}`;
+  await database.sourceSnapshot.create({
+    data: {
+      sourceSnapshotId: sourceId,
+      workspaceId: P2_TEST_IDENTITY.workspaceId,
+      projectId: project.projectId,
+      sourceKind: "PRODUCT_SOURCE",
+      mediaType: "image/png",
+      byteSize: BigInt(128),
+      contentDigest: crypto.randomUUID().replaceAll("-", "").padEnd(64, "0"),
+      storageLocator: `p2-test/${project.projectId}/${sourceId}.png`,
+      validationStatus: "VALID",
+      lifecycleStatus: "ACTIVE",
+      createdByActorId: P2_TEST_IDENTITY.userActorId,
+    },
+  });
+  return { projectId: project.projectId, sourceSnapshotId: sourceId };
 }
 
 function request(body: unknown, key: string): Request {
