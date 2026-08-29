@@ -77,6 +77,11 @@ enum TruthRevisionLinkStatus {
   INVALIDATED
 }
 
+enum P2IdempotencyStatus {
+  IN_PROGRESS
+  SUCCEEDED
+}
+
 enum ProjectStatus {
   DRAFT
   ACTIVE
@@ -148,6 +153,7 @@ model Workspace {
   createdByActor   UserActor       @relation("WorkspaceCreator", fields: [createdByActorId], references: [userActorId], onDelete: Restrict, onUpdate: Cascade)
   memberships      Membership[]
   productProjects  ProductProject[]
+  p2IdempotencyRecords P2IdempotencyRecord[]
 
   @@index([createdByActorId])
 }
@@ -169,6 +175,7 @@ model Membership {
   createdProductTruthRevisions ProductTruthRevision[] @relation("ProductTruthRevisionCreatorMembership")
   createdTruthRevisionSourceLinks TruthRevisionSourceLink[] @relation("TruthRevisionSourceLinkCreatorMembership")
   p2DomainEvents P2DomainEvent[] @relation("P2DomainEventActorMembership")
+  p2IdempotencyRecords P2IdempotencyRecord[] @relation("P2IdempotencyActorMembership")
 
   @@unique([workspaceId, userActorId])
   @@index([userActorId, status])
@@ -191,6 +198,7 @@ model ProductProject {
   truthRevisions    ProductTruthRevision[] @relation("ProductProjectTruthRevisions")
   activeTruthRevision ProductTruthRevision? @relation("ActiveProductTruthRevision", fields: [workspaceId, projectId, activeTruthRevisionId], references: [workspaceId, projectId, productTruthRevisionId], onDelete: Restrict, onUpdate: Cascade)
   p2DomainEvents    P2DomainEvent[]
+  p2IdempotencyRecords P2IdempotencyRecord[]
 
   @@unique([workspaceId, projectId])
   @@unique([workspaceId, skuIdentityKey])
@@ -289,6 +297,28 @@ model P2DomainEvent {
 
   @@index([workspaceId, projectId, occurredAt])
   @@index([workspaceId, requestId])
+  @@index([actorId])
+}
+
+model P2IdempotencyRecord {
+  idempotencyRecordId String              @id
+  workspaceId        String
+  projectId          String
+  actorId            String
+  operation          String
+  idempotencyKey     String
+  requestFingerprint String
+  status             P2IdempotencyStatus
+  responseStatus     Int?
+  responseBody       Json?
+  createdAt          DateTime            @default(now())
+  completedAt        DateTime?
+  workspace          Workspace           @relation(fields: [workspaceId], references: [workspaceId], onDelete: Restrict, onUpdate: Cascade)
+  productProject     ProductProject      @relation(fields: [workspaceId, projectId], references: [workspaceId, projectId], onDelete: Restrict, onUpdate: Cascade)
+  actorMembership    Membership          @relation("P2IdempotencyActorMembership", fields: [workspaceId, actorId], references: [workspaceId, userActorId], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([workspaceId, operation, idempotencyKey])
+  @@index([workspaceId, projectId, createdAt])
   @@index([actorId])
 }
 
