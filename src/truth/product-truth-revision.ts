@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { Prisma } from "@/src/generated/prisma/client";
 import {
   withP2WorkspaceMembershipScope,
+  type P2AuthContext,
   type P2WorkspacePrincipalResolver,
 } from "@/src/auth/workspace-membership-scope";
 import type {
@@ -156,17 +157,43 @@ type TruthRevisionRecord = {
   createdAt: Date;
 };
 
+export type P2CreateTruthRevisionInput = Readonly<{
+  projectId: unknown;
+  expectedCurrentRevisionId: unknown;
+  parentRevisionId?: unknown;
+  truthBody: unknown;
+  productContinuity: unknown;
+  sourceBindings: unknown;
+}>;
+
+export type P2ActivateTruthRevisionInput = Readonly<{
+  projectId: unknown;
+  truthRevisionId: unknown;
+  expectedCurrentRevisionId: unknown;
+  requestId: unknown;
+  correlationId: unknown;
+  sourceCommit: unknown;
+  productVersion: unknown;
+}>;
+
 export async function createP2ProductTruthRevision(
   database: DatabaseClient,
-  input: Readonly<{
-    projectId: unknown;
-    expectedCurrentRevisionId: unknown;
-    parentRevisionId?: unknown;
-    truthBody: unknown;
-    productContinuity: unknown;
-    sourceBindings: unknown;
-  }>,
+  input: P2CreateTruthRevisionInput,
   principalResolver?: P2WorkspacePrincipalResolver,
+): Promise<P2ProductTruthDraftResource> {
+  validateCreateInput(input);
+  return withP2WorkspaceMembershipScope(
+    database,
+    (transaction, context) =>
+      createP2ProductTruthRevisionInScope(transaction, context, input),
+    principalResolver,
+  );
+}
+
+export async function createP2ProductTruthRevisionInScope(
+  transaction: TransactionClient,
+  context: P2AuthContext,
+  input: P2CreateTruthRevisionInput,
 ): Promise<P2ProductTruthDraftResource> {
   const projectId = parseCanonicalIdentifier(input.projectId);
   const expectedCurrentRevisionId = parseExpectedRevisionId(
@@ -177,9 +204,7 @@ export async function createP2ProductTruthRevision(
   const productContinuity = parseContinuity(input.productContinuity);
   const sourceBindings = parseSourceBindings(input.sourceBindings);
 
-  return withP2WorkspaceMembershipScope(
-    database,
-    async (transaction, context) => {
+  return (async () => {
       const project = await lockWritableProject(
         transaction,
         context.workspaceId,
@@ -239,23 +264,46 @@ export async function createP2ProductTruthRevision(
           ),
         ),
       });
-    },
-    principalResolver,
-  );
+  })();
 }
 
 export async function activateP2ProductTruthRevision(
   database: DatabaseClient,
-  input: Readonly<{
-    projectId: unknown;
-    truthRevisionId: unknown;
-    expectedCurrentRevisionId: unknown;
-    requestId: unknown;
-    correlationId: unknown;
-    sourceCommit: unknown;
-    productVersion: unknown;
-  }>,
+  input: P2ActivateTruthRevisionInput,
   principalResolver?: P2WorkspacePrincipalResolver,
+): Promise<P2ProductTruthActivationResource> {
+  validateActivationInput(input);
+  return withP2WorkspaceMembershipScope(
+    database,
+    (transaction, context) =>
+      activateP2ProductTruthRevisionInScope(transaction, context, input),
+    principalResolver,
+  );
+}
+
+function validateCreateInput(input: P2CreateTruthRevisionInput): void {
+  parseCanonicalIdentifier(input.projectId);
+  parseExpectedRevisionId(input.expectedCurrentRevisionId);
+  parseOptionalRevisionId(input.parentRevisionId);
+  parseTruthBody(input.truthBody);
+  parseContinuity(input.productContinuity);
+  parseSourceBindings(input.sourceBindings);
+}
+
+function validateActivationInput(input: P2ActivateTruthRevisionInput): void {
+  parseCanonicalIdentifier(input.projectId);
+  parseCanonicalIdentifier(input.truthRevisionId);
+  parseExpectedRevisionId(input.expectedCurrentRevisionId);
+  parseCanonicalIdentifier(input.requestId);
+  parseCanonicalIdentifier(input.correlationId);
+  parseSourceCommit(input.sourceCommit);
+  parseCanonicalIdentifier(input.productVersion);
+}
+
+export async function activateP2ProductTruthRevisionInScope(
+  transaction: TransactionClient,
+  context: P2AuthContext,
+  input: P2ActivateTruthRevisionInput,
 ): Promise<P2ProductTruthActivationResource> {
   const projectId = parseCanonicalIdentifier(input.projectId);
   const truthRevisionId = parseCanonicalIdentifier(input.truthRevisionId);
@@ -267,9 +315,7 @@ export async function activateP2ProductTruthRevision(
   const sourceCommit = parseSourceCommit(input.sourceCommit);
   const productVersion = parseCanonicalIdentifier(input.productVersion);
 
-  return withP2WorkspaceMembershipScope(
-    database,
-    async (transaction, context) => {
+  return (async () => {
       const project = await lockWritableProject(
         transaction,
         context.workspaceId,
@@ -394,9 +440,38 @@ export async function activateP2ProductTruthRevision(
           correlationId,
         }),
       });
-    },
+  })();
+}
+
+export async function getP2ProductTruthRevision(
+  database: DatabaseClient,
+  input: Readonly<{ projectId: unknown; truthRevisionId: unknown }>,
+  principalResolver?: P2WorkspacePrincipalResolver,
+): Promise<P2ProductTruthRevisionResource> {
+  return withP2WorkspaceMembershipScope(
+    database,
+    (transaction, context) =>
+      getP2ProductTruthRevisionInScope(transaction, context, input),
     principalResolver,
   );
+}
+
+export async function getP2ProductTruthRevisionInScope(
+  transaction: TransactionClient,
+  context: P2AuthContext,
+  input: Readonly<{ projectId: unknown; truthRevisionId: unknown }>,
+): Promise<P2ProductTruthRevisionResource> {
+  const projectId = parseCanonicalIdentifier(input.projectId);
+  const truthRevisionId = parseCanonicalIdentifier(input.truthRevisionId);
+  const revision = await transaction.productTruthRevision.findFirst({
+    where: {
+      workspaceId: context.workspaceId,
+      projectId,
+      productTruthRevisionId: truthRevisionId,
+    },
+  });
+  if (!revision) throw projectNotFound();
+  return toTruthRevisionResource(revision);
 }
 
 async function lockWritableProject(
