@@ -17,6 +17,14 @@ The repository default remains `P2_LOCKED`. A future P2 task may proceed only wh
 
 It does not globally unlock P2, authorize a second P2 task, permit production use, or widen any path allowlist.
 
+### One-time replacement after an unpublished P2 failure
+
+A failed P2 task may have exactly one replacement only when the predecessor is closed `HOLD / not_planned`, has exhausted its visible owner-approved human corrective-update limit, its remote head still equals its authorized base SHA, and no pull request has ever existed from that head ref. The predecessor must never reopen. This is a narrowly defined replacement of an unpublished attempt, not a parallel task, repair round, retry writer, force-push, branch continuation, or bypass of a published failing PR.
+
+Before creating the replacement Issue, direct evidence must establish the predecessor Issue number, authorized base and head ref, remote head equality, absence of PR history, failed command, real exit code, and failure class. The replacement must use the same authorized base, task class, phase, exact path allowlist, exact dependencies, migration count, and frozen product/security semantics. It may only incorporate compatibility knowledge learned from the unpublished failure. It requires a new historically unique head ref and current-digest owner approval, declares zero automated repair rounds and zero human corrective updates, and is the final task in that lineage. Any mismatch, ambiguity, published commit, PR history, predecessor reopening, scope expansion, second replacement, or sibling task returns `HOLD`.
+
+The read-only observer does not prove this lineage. `PREPUBLICATION_REPLACEMENT_ELIGIBILITY` remains an explicit human-review item until all evidence above is recorded. A replacement PR remains initially Draft; CI success is observer-only evidence and does not authorize Ready, merge, production use, credentials, real email, deployment, or providers.
+
 The separately frozen S1E authentication profile uses `P2_AUTH_IMPLEMENTATION + P2_AUTH_DRAFT_ONLY`. It is narrower than ordinary P2 and exists only to satisfy `V5_P2_S1E_AUTH_CONTRACT.md`. It does not relax ordinary `P2_IMPLEMENTATION` rules or authorize production authentication, real email, credentials, deployment, public sign-up, account recovery, or production database use.
 
 ## Authoritative product inputs
@@ -156,7 +164,7 @@ The observer may return `PASS` only for the following machine-verifiable evidenc
 4. If `prisma/` changed, the exact additive-database file shape and integration-test presence above pass.
 5. `Quality gates` completed successfully for the exact current head.
 
-An observer `PASS` is metadata and CI evidence only. It must continue to report `P2_SEMANTIC_SCOPE_REVIEW` and `EXACT_TEST_COMMAND_EXIT_CODES` as unverified, plus `P2_DATABASE_MIGRATION_SEMANTICS` whenever the database exception is used. It must not claim that product semantics, provider absence, additive SQL, or the frozen P2 boundary have been human-accepted.
+An observer `PASS` is metadata and CI evidence only. It must continue to report `P2_SEMANTIC_SCOPE_REVIEW` and `EXACT_TEST_COMMAND_EXIT_CODES` as unverified, plus `P2_DATABASE_MIGRATION_SEMANTICS` whenever the database exception is used and `PREPUBLICATION_REPLACEMENT_ELIGIBILITY` whenever the one-time replacement exception is used. It must not claim that product semantics, provider absence, additive SQL, replacement eligibility, or the frozen P2 boundary have been human-accepted.
 
 Before a human semantic reviewer may accept the exact P2 vertical slice—even while the PR remains Draft—the task handback must additionally provide direct evidence that:
 
