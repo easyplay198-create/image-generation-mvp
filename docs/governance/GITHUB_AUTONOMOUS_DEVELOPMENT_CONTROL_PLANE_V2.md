@@ -11,11 +11,11 @@
 - Automatic repair/Codex dispatch: `DISABLED`
 - Effective automated repair limit: `0`
 - Default product phase: `P2_LOCKED`
-- Task-scoped P2 phase: `P2_DRAFT_ONLY` (owner-approved P2 Issue/Draft PR only)
+- Task-scoped P2 phases: `P2_DRAFT_ONLY` and the narrower `P2_AUTH_DRAFT_ONLY` (owner-approved exact Draft PR only)
 - Auto-merge: `DISABLED`
 - Merge authority: human only
 
-V2 adds a deterministic, fail-closed metadata observer to V1. It does not make GitHub comments transactional, does not create a writer, and never grants merge authority. The repository default remains `P2_LOCKED`. A separately owner-approved `P2_IMPLEMENTATION` task may enter only `P2_DRAFT_ONLY` for its exact Draft PR; this is task-scoped authorization, not a global phase switch or permission to mark Ready or merge. V2 supersedes V1 for new tasks; V1 remains historical context.
+V2 adds a deterministic, fail-closed metadata observer to V1. It does not make GitHub comments transactional, does not create a writer, and never grants merge authority. The repository default remains `P2_LOCKED`. A separately owner-approved `P2_IMPLEMENTATION` task may enter only `P2_DRAFT_ONLY`; the narrower S1E profile may use only `P2_AUTH_IMPLEMENTATION + P2_AUTH_DRAFT_ONLY`. Both are exact Draft-PR authorizations, not global phase switches or permission to mark Ready or merge. V2 supersedes V1 for new tasks; V1 remains historical context.
 
 ## Why V2 has no writer
 
@@ -63,7 +63,9 @@ An owner-approved P2 task uses the same schema plus one exact branch binding:
 CONTROL_PLANE_V2_CONTRACT_END -->
 ```
 
-The accepted task/phase pairs are exactly `ORDINARY_TASK + P2_LOCKED`, `CONTROL_PLANE_CHANGE + P2_LOCKED`, and `P2_IMPLEMENTATION + P2_DRAFT_ONLY`. Paths are exact, case-sensitive, NFC-normalized repository-relative files. Absolute paths, backslashes, empty segments, `.`/`..`, globs, regular expressions, and duplicates are rejected. The allowlist and final changed-path set must match exactly; a rename requires both paths. Only `CONTROL_PLANE_CHANGE` may change any root or nested `AGENTS.md`/`AGENTS.override.md`, `CODEOWNERS`, `.github/**`, or `docs/governance/**`, and its allowlist may contain only protected paths. Both `CONTROL_PLANE_CHANGE` and `P2_IMPLEMENTATION` must declare zero automated repair rounds.
+The S1E authentication profile uses the same exact keys with `taskClass` equal to `P2_AUTH_IMPLEMENTATION` and `phase` equal to `P2_AUTH_DRAFT_ONLY`. It remains branch-bound, owner-created, Draft-only and zero-repair.
+
+The accepted task/phase pairs are exactly `ORDINARY_TASK + P2_LOCKED`, `CONTROL_PLANE_CHANGE + P2_LOCKED`, `P2_IMPLEMENTATION + P2_DRAFT_ONLY`, and `P2_AUTH_IMPLEMENTATION + P2_AUTH_DRAFT_ONLY`. Paths are exact, case-sensitive, NFC-normalized repository-relative files. Absolute paths, backslashes, empty segments, `.`/`..`, globs, regular expressions, and duplicates are rejected. The allowlist and final changed-path set must match exactly; a rename requires both paths. Only `CONTROL_PLANE_CHANGE` may change any root or nested `AGENTS.md`/`AGENTS.override.md`, `CODEOWNERS`, `.github/**`, or `docs/governance/**`, and its allowlist may contain only protected paths. `CONTROL_PLANE_CHANGE` and both P2 implementation classes must declare zero automated repair rounds.
 
 The approved visible body of a P2 Issue may separately authorize at most one human-orchestrated corrective update after the initial implementation. The Issue-body digest binds that limit, but the read-only observer cannot count or dispatch it. It must remain within the same Issue, branch, Draft PR, exact allowlist, dependencies, and frozen semantics; a second correction or any expansion returns `HOLD`. This does not change `maxRepairRounds: 0`, `effectiveAutoFixLimit: 0`, or the disabled writer.
 
@@ -126,7 +128,7 @@ The observer returns `HOLD` unless all applicable checks pass:
 
 1. Repository, owner, default branch, and GraphQL `autoMergeAllowed=false` identity.
 2. Open owner-created Issue, unambiguous JSON markers, no duplicate JSON keys, current body digest, and one current owner approval.
-3. Open same-repository Draft PR, exact authorized base, historically unique head branch across all PR states and bases, and bound PR marker. P2 additionally requires the stable owner as PR creator and an exact pre-approved head ref.
+3. Open same-repository Draft PR, exact authorized base, historically unique head branch across all PR states and bases, and bound PR marker. Both P2 implementation classes additionally require the stable owner as PR creator and an exact pre-approved head ref.
 4. Literal changed-path equality plus immutable base/head commit and recursive-tree identity.
 5. Exact added/removed/modified/renamed endpoint modes; no symlink (`120000`) or submodule (`160000`) change.
 6. Exact owner reconciliation actor/command, or exact `CI` workflow-run identity and current head.
@@ -134,8 +136,9 @@ The observer returns `HOLD` unless all applicable checks pass:
 8. Check Suite ID, GitHub Actions App identity, repository, branch, head, `after`, status, and conclusion. GitHub may omit the suite's PR record; the unique open-PR lookup plus workflow-run and job identities then provide the binding. If a suite PR record is present, it must exactly match the current number/base/head/repositories.
 9. A fully paginated PR timeline with no base change, close/reopen, ref deletion/restoration, or base/head force-push event at or after the selected CI run was created. Combined with the `CI` workflow's `main` base filter, approval-time rule, and exact event-derived run name, this prevents a historical run from being accepted for another PR/base/head lifecycle.
 10. Exactly one completed `Quality gates` job bound to run ID, attempt, head, and workflow conclusion.
-11. Reserved ledger ambiguity, any lifecycle/package change regardless of CI result, unapproved or out-of-scope P2 work, secret access, permission expansion, API/GraphQL errors, pagination, or snapshot races all fail closed.
+11. Reserved ledger ambiguity, every lifecycle/package change outside the exact S1E root npm pair, unapproved or out-of-scope P2 work, secret access, permission expansion, API/GraphQL errors, pagination, or snapshot races all fail closed.
 12. If a P2 diff touches `prisma/`, the machine requires exactly a modified regular-file `prisma/schema.prisma`, one added regular-file `prisma/migrations/<14-digit timestamp>_p2_<slug>/migration.sql`, no other `prisma/` path, and at least one changed exact path under `tests/integration/` ending in `.test.ts`. This proves shape only, not additive SQL semantics.
+13. A `P2_AUTH_IMPLEMENTATION` diff must satisfy `V5_P2_S1E_AUTH_CONTRACT.md`, modify exactly the root `package.json` and root `package-lock.json` lifecycle pair, use exactly one `_p2_auth_` migration plus an integration test, and contain no protected path. Dependency contents and security semantics remain human-review items.
 
 Only `success` and `failure` are accepted terminal CI conclusions. Locked-task success produces `CI_ACCEPTED_OBSERVER_ONLY`. P2 success produces `P2_DRAFT_ONLY_CI_ACCEPTED_OBSERVER_ONLY`, keeps `CONTROL_STATE=OBSERVER_ONLY`, reports `P2_STATUS=DRAFT_ONLY`, and requires `KEEP_DRAFT`; it is not semantic acceptance or merge authorization. Failure produces `HOLD` and never dispatches a repair.
 
@@ -154,7 +157,7 @@ The new migration may be applied only by fixed Quality gates to fresh and repeat
 - Any actor, identity, association, digest, base, PR, head, workflow, Check Suite, job, path, tree, mode, ledger, repair-budget, pagination, GraphQL, API, or two-read mismatch.
 - Edited, missing, duplicated, stale, deleted, malformed, or conflicting trusted evidence.
 - A non-control-plane task touching a protected path; a control-plane allowlist containing a non-protected path; or a control-plane/P2 task declaring nonzero automated repair rounds.
-- Any task/phase pair outside the three frozen pairs; P2 without exact owner/branch/approval binding; P2 outside `V5_P2_ENTRY_GOVERNANCE.md`; a P2 migration that is unapproved or shape-invalid; any other migration lacking dedicated owner approval; a database change without human semantic review; destructive action, real secret, permission expansion, external write, provider call, or semantic ambiguity.
+- Any task/phase pair outside the four frozen pairs; P2 without exact owner/branch/approval binding; P2 outside `V5_P2_ENTRY_GOVERNANCE.md`; authentication work outside `V5_P2_S1E_AUTH_CONTRACT.md`; a P2 migration that is unapproved or shape-invalid; any other migration lacking dedicated owner approval; a database change without human semantic review; destructive action, real secret, permission expansion, external write, provider call, or semantic ambiguity.
 - Any automatic-repair, ready-for-review, push, auto-merge, or merge request.
 - Any assertion that branch protection, owner-review/no-bypass, visible-field semantics, PR/head-bound approval, observer activation, or observer required-check status is established without direct evidence.
 
