@@ -1,10 +1,10 @@
 # V5 P2 Draft-only entry governance
 
-Status: frozen task-scoped governance; P2 implementation has not started in this change.
+Status: frozen task-scoped governance; this change only adds the S1E authentication entry profile and does not implement authentication.
 
 ## Decision
 
-The repository default remains `P2_LOCKED`. A future P2 task may proceed only when a dedicated human-owner Issue, approval, task branch, and initially Draft PR satisfy all controls below. The only machine-recognized P2 state is `P2_DRAFT_ONLY`.
+The repository default remains `P2_LOCKED`. A future P2 task may proceed only when a dedicated human-owner Issue, approval, task branch, and initially Draft PR satisfy all controls below. The machine-recognized task-scoped states are ordinary `P2_DRAFT_ONLY` and the narrower `P2_AUTH_DRAFT_ONLY`.
 
 `P2_DRAFT_ONLY` means:
 
@@ -16,6 +16,8 @@ The repository default remains `P2_LOCKED`. A future P2 task may proceed only wh
 - human semantic review and a separate human decision are required before any later lifecycle transition.
 
 It does not globally unlock P2, authorize a second P2 task, permit production use, or widen any path allowlist.
+
+The separately frozen S1E authentication profile uses `P2_AUTH_IMPLEMENTATION + P2_AUTH_DRAFT_ONLY`. It is narrower than ordinary P2 and exists only to satisfy `V5_P2_S1E_AUTH_CONTRACT.md`. It does not relax ordinary `P2_IMPLEMENTATION` rules or authorize production authentication, real email, credentials, deployment, public sign-up, account recovery, or production database use.
 
 ## Authoritative product inputs
 
@@ -76,6 +78,8 @@ The unedited owner approval must bind the same base SHA, head ref, Issue-body SH
 
 A reused branch name, missing branch binding, edited approval, non-owner PR, nonzero automated repair budget, Ready transition, or mismatch returns `HOLD`. The single human corrective update is not an automated repair round: its visible limit is bound by the approved Issue-body digest, its actual count remains human-audited, and the observer never dispatches it.
 
+For `P2_AUTH_IMPLEMENTATION`, the same contract shape is used with phase `P2_AUTH_DRAFT_ONLY` and an exact `authorizedHeadRef`. The owner approval must bind that same phase and branch.
+
 ## P2 implementation allowlist
 
 A future P2 Issue may authorize only the minimum files needed for these capabilities:
@@ -125,6 +129,8 @@ P2 Draft-only work must not implement or claim:
 - control-plane, workflow, permission, CODEOWNERS, or governance-file changes;
 - changes to `package.json` or the recognized npm/pnpm/Yarn/Bun lock basenames (`package-lock.json`, `npm-shrinkwrap.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lock`, or `bun.lockb`) under `P2_DRAFT_ONLY`; a package manifest or lockfile from another ecosystem is outside this frozen contract and requires governance refreeze before evaluation.
 
+The only lifecycle exception is a separately owner-approved `P2_AUTH_IMPLEMENTATION + P2_AUTH_DRAFT_ONLY` task satisfying `V5_P2_S1E_AUTH_CONTRACT.md`. It must modify both and only the root `package.json` and root `package-lock.json` as lifecycle files, pin the exact reviewed Auth.js dependency set, include the required single `_p2_auth_` migration plus integration test, and make no unrelated dependency change. This exception never applies to ordinary P2.
+
 If an excluded capability becomes necessary, stop with `HOLD`; do not expand the Issue or infer authorization. A control-plane change cannot relax an upstream product or P1 contract boundary. When an exclusion comes from an authoritative product or P1 contract, any later change requires that upstream contract to be refrozen first, followed by a separate control-plane governance amendment, a new control-contract digest, and a new owner approval.
 
 ## Data, credential, and provider boundary
@@ -146,7 +152,7 @@ The observer may return `PASS` only for the following machine-verifiable evidenc
 
 1. Exact contract/approval/base/head-ref/owner/Draft bindings pass.
 2. Changed paths equal the approved allowlist and contain no protected path.
-3. No recognized Node package lifecycle path changed: `package.json`, `package-lock.json`, `npm-shrinkwrap.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lock`, or `bun.lockb`, at the repository root or in a nested directory.
+3. Ordinary P2 changes no recognized Node package lifecycle path. The narrow auth task changes exactly the root `package.json` and root `package-lock.json` pair and satisfies the auth contract; every nested manifest, alternative lockfile and unrelated dependency change fails closed.
 4. If `prisma/` changed, the exact additive-database file shape and integration-test presence above pass.
 5. `Quality gates` completed successfully for the exact current head.
 
@@ -179,4 +185,4 @@ Any `HOLD` reports `P2_STATUS=LOCKED`. No machine result marks the PR Ready or a
 
 ## This governance task
 
-This document and its companion control-plane changes establish entry rules only. They do not modify application code, Prisma schema, migrations, package lifecycle files, provider configuration, or production data and do not start P2. No machine result authorizes this governance PR's lifecycle transition; the current human authorization may separately permit an ordinary Ready transition and merge only after exact-head evidence, without authorizing any P2 product task.
+This document and its companion control-plane changes establish entry rules only. They do not modify application code, Prisma schema, migrations, package lifecycle files, provider configuration, or production data and do not start S1E. No machine result authorizes this governance PR's lifecycle transition; the current human authorization may separately permit an ordinary Ready transition and merge only after exact-head evidence, without authorizing the later authentication implementation.

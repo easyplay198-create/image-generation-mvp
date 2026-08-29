@@ -53,7 +53,7 @@ function makeSnapshot({
     schema: POLICY.schema,
     taskClass,
   };
-  if (taskClass === 'P2_IMPLEMENTATION') {
+  if (taskClass === 'P2_IMPLEMENTATION' || taskClass === 'P2_AUTH_IMPLEMENTATION') {
     contract.authorizedHeadRef = authorizedHeadRef ?? 'issue-21-p2-draft-only';
   }
   const issueBody = marker('CONTROL_PLANE_V2_CONTRACT', contract);
@@ -65,7 +65,7 @@ function makeSnapshot({
     phase,
     schema: POLICY.schema,
   };
-  if (taskClass === 'P2_IMPLEMENTATION') {
+  if (taskClass === 'P2_IMPLEMENTATION' || taskClass === 'P2_AUTH_IMPLEMENTATION') {
     approval.authorizedHeadRef = contract.authorizedHeadRef;
   }
   const link = {
@@ -271,7 +271,7 @@ test('P2 contract, approval, owner, and branch bindings fail closed', () => {
       phase: 'P2_DRAFT_ONLY',
       maxRepairRounds: 1,
     })),
-    /P2_IMPLEMENTATION_REPAIR_LIMIT_NOT_ZERO/u,
+    /P2_TASK_REPAIR_LIMIT_NOT_ZERO/u,
   );
   assert.match(
     holdReason(makeSnapshot({
@@ -828,6 +828,8 @@ test('accepts only the frozen task-class and phase pairs', () => {
     ['CONTROL_PLANE_CHANGE', 'P2_DRAFT_ONLY'],
     ['P2_IMPLEMENTATION', 'P2_LOCKED'],
     ['P2_IMPLEMENTATION', 'P2_ACTIVE'],
+    ['P2_AUTH_IMPLEMENTATION', 'P2_DRAFT_ONLY'],
+    ['P2_AUTH_IMPLEMENTATION', 'P2_LOCKED'],
   ]) {
     assert.match(
       holdReason(makeSnapshot({ taskClass, phase })),
@@ -991,6 +993,81 @@ test('failed CI is observer-only and lifecycle changes always require a human', 
   for (const path of ['bun.lock.backup', 'package.json.example']) {
     assert.equal(evaluateControlSnapshot(makeSnapshot({ allowedPaths: [path] })).result, 'PASS');
   }
+});
+
+test('accepts only the exact P2 authentication dependency and migration profile', () => {
+  const migrationPath =
+    'prisma/migrations/20260829093000_p2_auth_database_session/migration.sql';
+  const allowedPaths = [
+    'package.json',
+    'package-lock.json',
+    'prisma/schema.prisma',
+    migrationPath,
+    'src/auth/auth.ts',
+    'tests/integration/p2-auth-session.test.ts',
+  ];
+  const changedFiles = [
+    { filename: 'package.json', previousFilename: null, status: 'modified', mode: '100644', previousMode: '100644' },
+    { filename: 'package-lock.json', previousFilename: null, status: 'modified', mode: '100644', previousMode: '100644' },
+    { filename: 'prisma/schema.prisma', previousFilename: null, status: 'modified', mode: '100644', previousMode: '100644' },
+    { filename: migrationPath, previousFilename: null, status: 'added', mode: '100644', previousMode: null },
+    { filename: 'src/auth/auth.ts', previousFilename: null, status: 'added', mode: '100644', previousMode: null },
+    { filename: 'tests/integration/p2-auth-session.test.ts', previousFilename: null, status: 'added', mode: '100644', previousMode: null },
+  ];
+  const result = evaluateControlSnapshot(makeSnapshot({
+    taskClass: 'P2_AUTH_IMPLEMENTATION',
+    phase: 'P2_AUTH_DRAFT_ONLY',
+    authorizedHeadRef: 'issue-33-p2-s1e-auth',
+    allowedPaths,
+    changedFiles,
+  }));
+  assert.equal(result.result, 'PASS');
+  assert.equal(result.decision, 'P2_AUTH_DRAFT_ONLY_CI_ACCEPTED_OBSERVER_ONLY');
+  assert.equal(result.p2Status, 'DRAFT_ONLY');
+  assert.equal(result.authChange, 'ROOT_NPM_PAIR_AND_SINGLE_AUTH_MIGRATION_REQUIRED');
+  assert.equal(result.databaseChange, 'SINGLE_MIGRATION_METADATA_SHAPE_ONLY');
+});
+
+test('P2 authentication profile rejects widened lifecycle and incomplete database shapes', () => {
+  const base = {
+    taskClass: 'P2_AUTH_IMPLEMENTATION',
+    phase: 'P2_AUTH_DRAFT_ONLY',
+    authorizedHeadRef: 'issue-33-p2-s1e-auth',
+  };
+  assert.match(
+    holdReason(makeSnapshot({ ...base, allowedPaths: ['package.json'] })),
+    /P2_AUTH_LIFECYCLE_PAIR_REQUIRED/u,
+  );
+  assert.match(
+    holdReason(makeSnapshot({
+      ...base,
+      allowedPaths: ['package.json', 'package-lock.json', 'tests/integration/auth.test.ts'],
+    })),
+    /P2_AUTH_SINGLE_MIGRATION_REQUIRED/u,
+  );
+  assert.match(
+    holdReason(makeSnapshot({
+      ...base,
+      allowedPaths: [
+        'package.json',
+        'package-lock.json',
+        'bun.lock',
+        'tests/integration/auth.test.ts',
+      ],
+    })),
+    /P2_AUTH_LIFECYCLE_PAIR_REQUIRED/u,
+  );
+  assert.match(
+    holdReason(makeSnapshot({
+      ...base,
+      allowedPaths: [
+        'apps/web/package.json',
+        'package-lock.json',
+        'tests/integration/auth.test.ts',
+      ],
+    })),
+    /P2_AUTH_LIFECYCLE_PAIR_REQUIRED/u,
+  );
 });
 
 test('ignores untrusted ledger markers', () => {
@@ -1410,7 +1487,7 @@ test('P2 templates and governance freeze Draft-only task-scoped entry', async ()
   assert.match(prTemplate, /keep the PR Draft/u);
   assert.match(prTemplate, /HUMAN_CORRECTION_ROUND_COUNT/u);
   assert.match(prTemplate, /REQUESTED_AUTOMATED_REPAIR_LIMIT/u);
-  assert.match(p2Governance, /P2 implementation has not started/u);
+  assert.match(p2Governance, /does not implement authentication/u);
   assert.match(p2Governance, /P2_DRAFT_ONLY/u);
   assert.match(p2Governance, /maxRepairRounds": 0/u);
   assert.match(p2Governance, /exactly one new `prisma\/migrations\/<14-digit timestamp>_p2_/u);

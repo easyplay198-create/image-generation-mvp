@@ -27,6 +27,7 @@ const TASK_PHASES = Object.freeze({
   ORDINARY_TASK: 'P2_LOCKED',
   CONTROL_PLANE_CHANGE: 'P2_LOCKED',
   P2_IMPLEMENTATION: 'P2_DRAFT_ONLY',
+  P2_AUTH_IMPLEMENTATION: 'P2_AUTH_DRAFT_ONLY',
 });
 const TERMINAL_CI_CONCLUSIONS = new Set(['success', 'failure']);
 const FILE_MODES = new Set(['100644', '100755', '120000', '160000']);
@@ -44,6 +45,10 @@ const PERMANENT_PR_LIFECYCLE_HOLD_EVENTS = new Set([
   'convert_to_draft',
   'ready_for_review',
 ]);
+
+function isP2TaskClass(taskClass) {
+  return taskClass === 'P2_IMPLEMENTATION' || taskClass === 'P2_AUTH_IMPLEMENTATION';
+}
 const CI_INVALIDATING_PR_EVENTS = new Set([
   ...PERMANENT_PR_LIFECYCLE_HOLD_EVENTS,
   'automatic_base_change_succeeded',
@@ -235,7 +240,7 @@ function mentionsMarker(body, marker) {
 }
 
 function validateContract(contract) {
-  const p2Task = contract?.taskClass === 'P2_IMPLEMENTATION';
+  const p2Task = isP2TaskClass(contract?.taskClass);
   exactKeys(
     contract,
     [
@@ -269,7 +274,7 @@ function validateContract(contract) {
     throw new Error('CONTROL_PLANE_CHANGE_REPAIR_LIMIT_NOT_ZERO');
   }
   if (p2Task && contract.maxRepairRounds !== 0) {
-    throw new Error('P2_IMPLEMENTATION_REPAIR_LIMIT_NOT_ZERO');
+    throw new Error('P2_TASK_REPAIR_LIMIT_NOT_ZERO');
   }
   if (!Array.isArray(contract.allowedPaths) || contract.allowedPaths.length === 0) {
     throw new Error('ALLOWLIST_EMPTY');
@@ -316,7 +321,12 @@ function parseTrustedApproval(comment) {
   );
   if (
     approval.schema !== POLICY.schema ||
-    approval.phase !== (p2Approval ? 'P2_DRAFT_ONLY' : 'P2_LOCKED') ||
+    (
+      p2Approval &&
+      approval.phase !== 'P2_DRAFT_ONLY' &&
+      approval.phase !== 'P2_AUTH_DRAFT_ONLY'
+    ) ||
+    (!p2Approval && approval.phase !== 'P2_LOCKED') ||
     !/^[0-9a-f]{64}$/u.test(approval.issueBodySha256) ||
     !isCommitSha(approval.authorizedBaseSha) ||
     !Number.isInteger(approval.maxRepairRounds) ||
@@ -342,10 +352,9 @@ function currentApproval(comments, contract, issueBodySha256) {
       approval.authorizedBaseSha !== contract.authorizedBaseSha ||
       approval.maxRepairRounds !== contract.maxRepairRounds ||
       approval.phase !== contract.phase ||
-      Object.hasOwn(approval, 'authorizedHeadRef') !==
-        (contract.taskClass === 'P2_IMPLEMENTATION') ||
+      Object.hasOwn(approval, 'authorizedHeadRef') !== isP2TaskClass(contract.taskClass) ||
       (
-        contract.taskClass === 'P2_IMPLEMENTATION' &&
+        isP2TaskClass(contract.taskClass) &&
         approval.authorizedHeadRef !== contract.authorizedHeadRef
       )
     ) {
@@ -386,7 +395,7 @@ function pathIsProtected(path) {
 }
 
 function validateP2DatabaseChangeShape(changedFiles, contract) {
-  if (contract.taskClass !== 'P2_IMPLEMENTATION') return 'NOT_APPLICABLE';
+  if (!isP2TaskClass(contract.taskClass)) return 'NOT_APPLICABLE';
   const schemaFiles = changedFiles.filter((file) =>
     file.filename === 'prisma/schema.prisma' || file.previousFilename === 'prisma/schema.prisma',
   );
@@ -416,7 +425,11 @@ function validateP2DatabaseChangeShape(changedFiles, contract) {
     migration.previousFilename !== null ||
     migration.previousMode !== null ||
     migration.mode !== '100644' ||
-    !/^prisma\/migrations\/[0-9]{14}_p2_[a-z0-9][a-z0-9_-]*\/migration\.sql$/u.test(
+    !(
+      contract.taskClass === 'P2_AUTH_IMPLEMENTATION'
+        ? /^prisma\/migrations\/[0-9]{14}_p2_auth_[a-z0-9][a-z0-9_-]*\/migration\.sql$/u
+        : /^prisma\/migrations\/[0-9]{14}_p2_[a-z0-9][a-z0-9_-]*\/migration\.sql$/u
+    ).test(
       migration.filename,
     )
   ) {
@@ -433,6 +446,34 @@ function validateP2DatabaseChangeShape(changedFiles, contract) {
     throw new Error('P2_DATABASE_TEST_PATH_REQUIRED');
   }
   return 'SINGLE_MIGRATION_METADATA_SHAPE_ONLY';
+}
+
+function validateP2AuthChangeShape(changedFiles, contract) {
+  if (contract.taskClass !== 'P2_AUTH_IMPLEMENTATION') return 'NOT_APPLICABLE';
+  const lifecycleFiles = changedFiles.filter((file) =>
+    LIFECYCLE_PATHS.has(file.filename.split('/').at(-1)) ||
+    (file.previousFilename && LIFECYCLE_PATHS.has(file.previousFilename.split('/').at(-1))),
+  );
+  const lifecycleNames = lifecycleFiles.map((file) => file.filename).sort();
+  if (JSON.stringify(lifecycleNames) !== JSON.stringify(['package-lock.json', 'package.json'])) {
+    throw new Error('P2_AUTH_LIFECYCLE_PAIR_REQUIRED');
+  }
+  if (lifecycleFiles.some((file) =>
+    file.previousFilename !== null ||
+    file.status !== 'modified' ||
+    file.mode !== '100644' ||
+    file.previousMode !== '100644'
+  )) {
+    throw new Error('P2_AUTH_LIFECYCLE_SHAPE_INVALID');
+  }
+  if (!changedFiles.some((file) =>
+    file.status !== 'removed' &&
+    file.filename.startsWith('tests/integration/') &&
+    file.filename.endsWith('.test.ts')
+  )) {
+    throw new Error('P2_AUTH_INTEGRATION_TEST_REQUIRED');
+  }
+  return 'ROOT_NPM_PAIR_AND_SINGLE_AUTH_MIGRATION_REQUIRED';
 }
 
 function validateModeShape(file) {
@@ -482,7 +523,14 @@ function validateChangedFiles(changedFiles, contract) {
     throw new Error('ALLOWLIST_AND_DIFF_SET_MISMATCH');
   }
   const databaseChange = validateP2DatabaseChangeShape(changedFiles, contract);
-  return { databaseChange, lifecycleChange };
+  const authChange = validateP2AuthChangeShape(changedFiles, contract);
+  if (
+    contract.taskClass === 'P2_AUTH_IMPLEMENTATION' &&
+    databaseChange !== 'SINGLE_MIGRATION_METADATA_SHAPE_ONLY'
+  ) {
+    throw new Error('P2_AUTH_SINGLE_MIGRATION_REQUIRED');
+  }
+  return { authChange, databaseChange, lifecycleChange };
 }
 
 function validateLedger(comments, context) {
@@ -570,7 +618,7 @@ function validatePr(pr, relatedPullRequests, contract) {
   ) {
     throw new Error('PR_NOT_UNIQUE_FOR_BRANCH');
   }
-  if (contract.taskClass === 'P2_IMPLEMENTATION') {
+  if (isP2TaskClass(contract.taskClass)) {
     if (!isOwnerIdentity(pr.user)) throw new Error('P2_PR_CREATOR_NOT_OWNER');
     if (pr.head.ref !== contract.authorizedHeadRef) throw new Error('P2_PR_HEAD_REF_NOT_AUTHORIZED');
   }
@@ -740,7 +788,9 @@ export function evaluateControlSnapshot(snapshot) {
     validatePr(snapshot.pr, snapshot.relatedPullRequests, contract);
     validateLink(snapshot.pr, snapshot.issue, contract, approval, issueBodySha256);
     const pathResult = validateChangedFiles(snapshot.changedFiles, contract);
-    if (pathResult.lifecycleChange) throw new Error('LIFECYCLE_CHANGE_REQUIRES_HUMAN');
+    if (pathResult.lifecycleChange && contract.taskClass !== 'P2_AUTH_IMPLEMENTATION') {
+      throw new Error('LIFECYCLE_CHANGE_REQUIRES_HUMAN');
+    }
     const ledgerEntries = validateLedger(snapshot.prComments ?? [], {
       issueNumber: snapshot.issue.number,
       prNumber: snapshot.pr.number,
@@ -769,15 +819,22 @@ export function evaluateControlSnapshot(snapshot) {
       phase: contract.phase,
       requestedRepairLimit: contract.maxRepairRounds,
       databaseChange: pathResult.databaseChange,
+      authChange: pathResult.authChange,
       ciStatus: snapshot.ci ? `${snapshot.ci.status}/${snapshot.ci.conclusion}` : 'NOT_FOUND',
       autoFixRoundCount: 0,
     };
     const conclusion = validateCi(snapshot.ci, snapshot.pr, approval.createdAt);
     validatePrTimeline(snapshot.prTimeline, snapshot.ci);
     if (conclusion === 'success') {
-      const p2DraftOnly = contract.taskClass === 'P2_IMPLEMENTATION';
+      const p2DraftOnly = isP2TaskClass(contract.taskClass);
       return pass(
-        p2DraftOnly ? 'P2_DRAFT_ONLY_CI_ACCEPTED_OBSERVER_ONLY' : 'CI_ACCEPTED_OBSERVER_ONLY',
+        p2DraftOnly
+          ? (
+              contract.taskClass === 'P2_AUTH_IMPLEMENTATION'
+                ? 'P2_AUTH_DRAFT_ONLY_CI_ACCEPTED_OBSERVER_ONLY'
+                : 'P2_DRAFT_ONLY_CI_ACCEPTED_OBSERVER_ONLY'
+            )
+          : 'CI_ACCEPTED_OBSERVER_ONLY',
         {
         ...details,
         ...(p2DraftOnly ? { p2Status: 'DRAFT_ONLY' } : {}),

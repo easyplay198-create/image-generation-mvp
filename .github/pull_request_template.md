@@ -6,8 +6,8 @@ Closes #
 
 - Control-plane version: `GITHUB_AUTONOMOUS_DEVELOPMENT_CONTROL_PLANE_V2`
 - Control mode: `OBSERVER_ONLY`
-- Current phase: `P2_LOCKED` / `P2_DRAFT_ONLY`
-- Task class: `ORDINARY_TASK` / `CONTROL_PLANE_CHANGE` / `P2_IMPLEMENTATION`
+- Current phase: `P2_LOCKED` / `P2_DRAFT_ONLY` / `P2_AUTH_DRAFT_ONLY`
+- Task class: `ORDINARY_TASK` / `CONTROL_PLANE_CHANGE` / `P2_IMPLEMENTATION` / `P2_AUTH_IMPLEMENTATION`
 - Authorized P2 task branch or `Not applicable`:
 - Issue approval URL:
 - Approver GitHub login:
@@ -19,6 +19,7 @@ Closes #
 - [ ] No automatic repair request was issued; the V2 writer and Codex dispatch remain disabled.
 - [ ] This pull request must not be auto-merged; final merge requires a human decision.
 - [ ] If this is `P2_IMPLEMENTATION`, the PR is owner-created, remains Draft, uses the exact pre-approved head ref, declares zero automated repair rounds, and is governed by the mandatory boundaries in `docs/governance/V5_P2_ENTRY_GOVERNANCE.md`.
+- [ ] If this is `P2_AUTH_IMPLEMENTATION`, the PR also satisfies `docs/governance/V5_P2_S1E_AUTH_CONTRACT.md`, changes only root `package.json` and root `package-lock.json` as lifecycle files, and includes the required single `_p2_auth_` migration and integration test.
 - [ ] Any human corrective update stayed inside the same Issue, branch, Draft PR, path allowlist, and frozen semantics; at most one is allowed and its count is reported below.
 
 <!-- CONTROL_PLANE_V2_LINK_BEGIN
@@ -90,7 +91,7 @@ List every unverified behavior, environment, service, or manual review item. Wri
 
 -
 
-Branch protection for `Quality gates` and owner-review/no-bypass behavior require separate direct verification. The read-only observer is not a protected PR-head check, GitHub comments are not a transactional ledger, and no observer result authorizes a repair dispatch or merge. For a `P2_IMPLEMENTATION` PR, `PASS` means only `P2_DRAFT_ONLY`; keep the PR Draft for human semantic review.
+Branch protection for `Quality gates` and owner-review/no-bypass behavior require separate direct verification. The read-only observer is not a protected PR-head check, GitHub comments are not a transactional ledger, and no observer result authorizes a repair dispatch or merge. For either P2 implementation class, `PASS` means only its exact Draft-only phase; keep the PR Draft for human semantic review.
 
 If a human converts the PR from Draft to ready, every prior observer result becomes a historical snapshot; a later reconcile must return `HOLD` while the current-state contract still requires Draft.
 
