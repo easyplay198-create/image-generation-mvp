@@ -7,6 +7,7 @@ import {
   P2_AUTH_ISSUER,
 } from "../../src/auth/authjs-adapter";
 import { createAuthJsP2PrincipalResolver } from "../../src/auth/authjs-principal-resolver";
+import { Prisma } from "../../src/generated/prisma/client";
 import {
   createDatabaseClient,
   type DatabaseClient,
@@ -196,6 +197,89 @@ describe.sequential("P2 S1E Auth.js database session", () => {
         readSession: async () => ({ user: { id: inactive.userActorId } }),
       }).resolve(),
     ).rejects.toMatchObject({ code: "FORBIDDEN_SCOPE" });
+  });
+
+  it("fails closed for zero or inactive Membership and inactive Workspace state", async () => {
+    const noMembershipUserActorId = uniqueId("no-membership-actor");
+    const noMembershipEmail = `${noMembershipUserActorId}@example.test`;
+    await database.userActor.create({
+      data: {
+        userActorId: noMembershipUserActorId,
+        authIssuer: P2_AUTH_ISSUER,
+        authSubject: noMembershipEmail,
+        status: "ACTIVE",
+      },
+    });
+    await expect(
+      createAuthJsP2PrincipalResolver({
+        database,
+        readSession: async () => ({ user: { id: noMembershipUserActorId } }),
+      }).resolve(),
+    ).rejects.toMatchObject({ code: "FORBIDDEN_SCOPE", status: 403 });
+
+    const revoked = await createIdentity("revoked-membership");
+    await database.membership.update({
+      where: { membershipId: revoked.membershipId },
+      data: {
+        status: "REVOKED",
+        revokedAt: new Date(),
+        revokedByActorId: revoked.userActorId,
+      },
+    });
+    await expect(
+      createAuthJsP2PrincipalResolver({
+        database,
+        readSession: async () => ({ user: { id: revoked.userActorId } }),
+      }).resolve(),
+    ).rejects.toMatchObject({ code: "FORBIDDEN_SCOPE", status: 403 });
+
+    const suspended = await createIdentity("suspended-workspace");
+    await database.workspace.update({
+      where: { workspaceId: suspended.workspaceId },
+      data: { status: "SUSPENDED", suspendedAt: new Date() },
+    });
+    await expect(
+      createAuthJsP2PrincipalResolver({
+        database,
+        readSession: async () => ({ user: { id: suspended.userActorId } }),
+      }).resolve(),
+    ).rejects.toMatchObject({ code: "FORBIDDEN_SCOPE", status: 403 });
+  });
+
+  it("rejects non-OWNER Membership roles at the PostgreSQL enum boundary", async () => {
+    const identity = await createIdentity("non-owner-enum");
+    const workspaceId = uniqueId("non-owner-workspace");
+    const membershipId = uniqueId("non-owner-membership");
+    await database.workspace.create({
+      data: {
+        workspaceId,
+        displayName: "Non-owner role rejection",
+        status: "ACTIVE",
+        createdByActorId: identity.userActorId,
+      },
+    });
+
+    await expect(
+      database.$executeRaw(Prisma.sql`
+        INSERT INTO "Membership" (
+          "membershipId",
+          "workspaceId",
+          "userActorId",
+          "role",
+          "status"
+        )
+        VALUES (
+          ${membershipId},
+          ${workspaceId},
+          ${identity.userActorId},
+          ${"VIEWER"}::"MembershipRole",
+          'ACTIVE'::"MembershipStatus"
+        )
+      `),
+    ).rejects.toBeTruthy();
+    await expect(
+      database.membership.count({ where: { membershipId } }),
+    ).resolves.toBe(0);
   });
 
   it("does not write legacy Project, Asset or Job records", async () => {

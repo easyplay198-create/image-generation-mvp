@@ -138,7 +138,7 @@ describe("P2 S1E Auth.js boundary", () => {
     expect(persisted?.tokenHash).not.toBe("raw-token");
   });
 
-  it("selects one active OWNER Workspace from only the server session", async () => {
+  it("selects one active OWNER Workspace and ignores forged cross-Workspace session data", async () => {
     const principal = await createAuthJsP2PrincipalResolver({
       database: resolverDatabase(),
       readSession: async () => ({
@@ -190,6 +190,21 @@ describe("P2 S1E Auth.js boundary", () => {
     ).rejects.toMatchObject({ code: "FORBIDDEN_SCOPE", status: 403 });
   });
 
+  it.each([
+    [{ membershipCount: 0 }, "zero active Membership"],
+    [{ membershipRole: "VIEWER" }, "non-OWNER Membership"],
+    [{ membershipStatus: "REVOKED" }, "inactive Membership"],
+    [{ workspaceStatus: "SUSPENDED" }, "inactive Workspace"],
+  ])("fails closed for %s (%s)", async (options, reason) => {
+    expect(reason).toBeTypeOf("string");
+    await expect(
+      createAuthJsP2PrincipalResolver({
+        database: resolverDatabase(options),
+        readSession: async () => ({ user: { id: ACTOR_ID } }),
+      }).resolve(),
+    ).rejects.toMatchObject({ code: "FORBIDDEN_SCOPE", status: 403 });
+  });
+
   it("wires all three P2 truth routes only through the Auth.js resolver", async () => {
     const routes = [
       "app/api/p2/projects/[projectId]/truth-revisions/route.ts",
@@ -220,13 +235,16 @@ describe("P2 S1E Auth.js boundary", () => {
 function resolverDatabase(options: Readonly<{
   actorStatus?: "ACTIVE" | "DISABLED";
   membershipCount?: number;
+  membershipRole?: string;
+  membershipStatus?: string;
+  workspaceStatus?: string;
 }> = {}): DatabaseClient {
   const membership = {
     workspaceId: WORKSPACE_ID,
     userActorId: ACTOR_ID,
-    role: "OWNER",
-    status: "ACTIVE",
-    workspace: { status: "ACTIVE" },
+    role: options.membershipRole ?? "OWNER",
+    status: options.membershipStatus ?? "ACTIVE",
+    workspace: { status: options.workspaceStatus ?? "ACTIVE" },
   };
   return {
     userActor: {
