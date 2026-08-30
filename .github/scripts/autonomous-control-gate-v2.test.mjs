@@ -615,6 +615,66 @@ test('allows one historical owner approval plus one current approval', () => {
   assert.equal(evaluateControlSnapshot(snapshot).result, 'PASS');
 });
 
+test('allows a malformed unlinked historical owner marker when the linked approval is valid', () => {
+  const snapshot = makeSnapshot();
+  snapshot.issueComments.unshift({
+    ...snapshot.issueComments[0],
+    id: 8001,
+    body: '<!-- CONTROL_PLANE_V2_APPROVAL_BEGIN\n{bad\nCONTROL_PLANE_V2_APPROVAL_END -->',
+  });
+  assert.equal(evaluateControlSnapshot(snapshot).result, 'PASS');
+});
+
+test('fails closed when the PR links a malformed historical owner marker', () => {
+  const snapshot = makeSnapshot();
+  snapshot.issueComments.unshift({
+    ...snapshot.issueComments[0],
+    id: 8002,
+    body: '<!-- CONTROL_PLANE_V2_APPROVAL_BEGIN\n{bad\nCONTROL_PLANE_V2_APPROVAL_END -->',
+  });
+  const link = extractMarkedJson(snapshot.pr.body, 'CONTROL_PLANE_V2_LINK');
+  link.approvalCommentId = 8002;
+  snapshot.pr.body = marker('CONTROL_PLANE_V2_LINK', link);
+  assert.match(holdReason(snapshot), /CONTROL_PLANE_V2_APPROVAL_JSON_INVALID/u);
+});
+
+test('fails closed when the linked approval is not from the trusted owner', () => {
+  const snapshot = makeSnapshot();
+  snapshot.issueComments[0].user = { id: 42, login: 'attacker', type: 'User' };
+  snapshot.issueComments[0].authorAssociation = 'NONE';
+  assert.match(holdReason(snapshot), /LINKED_APPROVAL_NOT_TRUSTED_OWNER/u);
+});
+
+test('fails closed when the linked approval binds the wrong base', () => {
+  const snapshot = makeSnapshot();
+  const approval = extractMarkedJson(
+    snapshot.issueComments[0].body,
+    'CONTROL_PLANE_V2_APPROVAL',
+  );
+  approval.authorizedBaseSha = '2'.repeat(40);
+  snapshot.issueComments[0].body = marker('CONTROL_PLANE_V2_APPROVAL', approval);
+  assert.match(holdReason(snapshot), /APPROVAL_BINDING_MISMATCH/u);
+});
+
+test('fails closed when the linked approval comment is missing or deleted', () => {
+  const snapshot = makeSnapshot();
+  const link = extractMarkedJson(snapshot.pr.body, 'CONTROL_PLANE_V2_LINK');
+  link.approvalCommentId = 9999;
+  snapshot.pr.body = marker('CONTROL_PLANE_V2_LINK', link);
+  assert.match(holdReason(snapshot), /LINKED_APPROVAL_COMMENT_COUNT_0/u);
+});
+
+test('fails closed when the linked approval binds a stale Issue digest', () => {
+  const snapshot = makeSnapshot();
+  const approval = extractMarkedJson(
+    snapshot.issueComments[0].body,
+    'CONTROL_PLANE_V2_APPROVAL',
+  );
+  approval.issueBodySha256 = 'a'.repeat(64);
+  snapshot.issueComments[0].body = marker('CONTROL_PLANE_V2_APPROVAL', approval);
+  assert.match(holdReason(snapshot), /APPROVAL_BINDING_MISMATCH/u);
+});
+
 test('rejects duplicate current approvals', () => {
   const snapshot = makeSnapshot();
   snapshot.issueComments.push({ ...snapshot.issueComments[0], id: 9002 });
@@ -624,7 +684,7 @@ test('rejects duplicate current approvals', () => {
 test('rejects an Issue body edit without reapproval', () => {
   const snapshot = makeSnapshot();
   snapshot.issue.body += '\nchanged';
-  assert.match(holdReason(snapshot), /VALID_APPROVAL_COUNT_0/u);
+  assert.match(holdReason(snapshot), /PR_LINK_BINDING_MISMATCH/u);
 });
 
 test('rejects a linked object that is actually a pull request', () => {
@@ -1465,6 +1525,15 @@ test('structured PASS reports exact operation and output paths', () => {
     output,
     /^HUMAN_CORRECTION_ROUND_COUNT=UNVERIFIED_FROM_READ_ONLY_GITHUB_METADATA$/mu,
   );
+  assert.match(
+    output,
+    /^LOCAL_CORRECTION_ROUND_COUNT=UNVERIFIED_FROM_READ_ONLY_GITHUB_METADATA$/mu,
+  );
+  assert.match(
+    output,
+    /^PUBLISHED_CORRECTION_ROUND_COUNT=UNVERIFIED_FROM_READ_ONLY_GITHUB_METADATA$/mu,
+  );
+  assert.match(output, /^FAILURE_CLASS=NONE$/mu);
 });
 
 test('P2 templates and governance freeze Draft-only task-scoped entry', async () => {
@@ -1495,7 +1564,7 @@ test('P2 templates and governance freeze Draft-only task-scoped entry', async ()
   assert.match(p2Governance, /REQUESTED_AUTOMATED_REPAIR_LIMIT=0/u);
   assert.match(controlGovernance, /Task-scoped P2 additive database exception/u);
   assert.match(controlGovernance, /REQUESTED_AUTOMATED_REPAIR_LIMIT=0/u);
-  assert.match(agents, /at most one human-orchestrated corrective update/u);
+  assert.match(agents, /at most five worktree-local corrections/u);
   assert.match(agents, /REQUESTED_AUTOMATED_REPAIR_LIMIT/u);
   assert.match(p2Governance, /DO_NOT_MERGE_BY_AUTOMATION/u);
   assert.match(evaluator, /pulls\?state=all&head=/u);
