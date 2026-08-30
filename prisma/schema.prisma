@@ -138,8 +138,28 @@ model UserActor {
   createdWorkspaces Workspace[]     @relation("WorkspaceCreator")
   memberships       Membership[]    @relation("MembershipActor")
   revokedMemberships Membership[]   @relation("MembershipRevoker")
+  p2AuthSessions     P2AuthSession[]
 
   @@unique([authIssuer, authSubject])
+}
+
+model P2AuthVerificationToken {
+  identifier String
+  tokenHash  String
+  expires    DateTime
+  createdAt  DateTime @default(now())
+
+  @@id([identifier, tokenHash])
+}
+
+model P2AuthSession {
+  sessionToken String    @id
+  userActorId  String
+  expires      DateTime
+  createdAt    DateTime  @default(now())
+  userActor    UserActor @relation(fields: [userActorId], references: [userActorId], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([userActorId, expires])
 }
 
 model Workspace {
