@@ -638,6 +638,43 @@ test('fails closed when the PR links a malformed historical owner marker', () =>
   assert.match(holdReason(snapshot), /CONTROL_PLANE_V2_APPROVAL_JSON_INVALID/u);
 });
 
+test('fails closed when the linked approval is not from the trusted owner', () => {
+  const snapshot = makeSnapshot();
+  snapshot.issueComments[0].user = { id: 42, login: 'attacker', type: 'User' };
+  snapshot.issueComments[0].authorAssociation = 'NONE';
+  assert.match(holdReason(snapshot), /LINKED_APPROVAL_NOT_TRUSTED_OWNER/u);
+});
+
+test('fails closed when the linked approval binds the wrong base', () => {
+  const snapshot = makeSnapshot();
+  const approval = extractMarkedJson(
+    snapshot.issueComments[0].body,
+    'CONTROL_PLANE_V2_APPROVAL',
+  );
+  approval.authorizedBaseSha = '2'.repeat(40);
+  snapshot.issueComments[0].body = marker('CONTROL_PLANE_V2_APPROVAL', approval);
+  assert.match(holdReason(snapshot), /APPROVAL_BINDING_MISMATCH/u);
+});
+
+test('fails closed when the linked approval comment is missing or deleted', () => {
+  const snapshot = makeSnapshot();
+  const link = extractMarkedJson(snapshot.pr.body, 'CONTROL_PLANE_V2_LINK');
+  link.approvalCommentId = 9999;
+  snapshot.pr.body = marker('CONTROL_PLANE_V2_LINK', link);
+  assert.match(holdReason(snapshot), /LINKED_APPROVAL_COMMENT_COUNT_0/u);
+});
+
+test('fails closed when the linked approval binds a stale Issue digest', () => {
+  const snapshot = makeSnapshot();
+  const approval = extractMarkedJson(
+    snapshot.issueComments[0].body,
+    'CONTROL_PLANE_V2_APPROVAL',
+  );
+  approval.issueBodySha256 = 'a'.repeat(64);
+  snapshot.issueComments[0].body = marker('CONTROL_PLANE_V2_APPROVAL', approval);
+  assert.match(holdReason(snapshot), /APPROVAL_BINDING_MISMATCH/u);
+});
+
 test('rejects duplicate current approvals', () => {
   const snapshot = makeSnapshot();
   snapshot.issueComments.push({ ...snapshot.issueComments[0], id: 9002 });
