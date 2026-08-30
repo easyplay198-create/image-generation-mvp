@@ -341,32 +341,55 @@ function parseTrustedApproval(comment) {
   return approval;
 }
 
-function currentApproval(comments, contract, issueBodySha256) {
-  const matches = [];
-  for (const comment of comments) {
-    if (!mentionsMarker(comment.body, APPROVAL_MARKER)) continue;
-    if (!isOwner(comment.user, comment.authorAssociation)) continue;
-    const approval = parseTrustedApproval(comment);
-    if (approval.issueBodySha256 !== issueBodySha256) continue;
-    if (
-      approval.authorizedBaseSha !== contract.authorizedBaseSha ||
-      approval.maxRepairRounds !== contract.maxRepairRounds ||
-      approval.phase !== contract.phase ||
-      Object.hasOwn(approval, 'authorizedHeadRef') !== isP2TaskClass(contract.taskClass) ||
-      (
-        isP2TaskClass(contract.taskClass) &&
-        approval.authorizedHeadRef !== contract.authorizedHeadRef
-      )
-    ) {
-      throw new Error('APPROVAL_BINDING_MISMATCH');
-    }
-    matches.push(comment);
-  }
-  if (matches.length !== 1) throw new Error(`VALID_APPROVAL_COUNT_${matches.length}`);
-  return matches[0];
+function approvalBindsContract(approval, contract, issueBodySha256) {
+  return (
+    approval.issueBodySha256 === issueBodySha256 &&
+    approval.authorizedBaseSha === contract.authorizedBaseSha &&
+    approval.maxRepairRounds === contract.maxRepairRounds &&
+    approval.phase === contract.phase &&
+    Object.hasOwn(approval, 'authorizedHeadRef') === isP2TaskClass(contract.taskClass) &&
+    (
+      !isP2TaskClass(contract.taskClass) ||
+      approval.authorizedHeadRef === contract.authorizedHeadRef
+    )
+  );
 }
 
-function validateLink(pr, issue, contract, approvalComment, issueBodySha256) {
+function currentApproval(comments, linkedApprovalCommentId, contract, issueBodySha256) {
+  const linked = comments.filter((comment) => comment.id === linkedApprovalCommentId);
+  if (linked.length !== 1) throw new Error(`LINKED_APPROVAL_COMMENT_COUNT_${linked.length}`);
+  const comment = linked[0];
+  if (!isOwner(comment.user, comment.authorAssociation)) {
+    throw new Error('LINKED_APPROVAL_NOT_TRUSTED_OWNER');
+  }
+  const approval = parseTrustedApproval(comment);
+  if (!approvalBindsContract(approval, contract, issueBodySha256)) {
+    throw new Error('APPROVAL_BINDING_MISMATCH');
+  }
+
+  let duplicateCurrentApprovalCount = 0;
+  for (const historical of comments) {
+    if (historical.id === linkedApprovalCommentId) continue;
+    if (!mentionsMarker(historical.body, APPROVAL_MARKER)) continue;
+    if (!isOwner(historical.user, historical.authorAssociation)) continue;
+    try {
+      const candidate = parseTrustedApproval(historical);
+      if (approvalBindsContract(candidate, contract, issueBodySha256)) {
+        duplicateCurrentApprovalCount += 1;
+      }
+    } catch {
+      // Only the exact PR-linked approval is authoritative. An unlinked malformed
+      // historical marker remains audit evidence but cannot permanently poison a
+      // later valid approval. If the PR links it, parsing above still fails closed.
+    }
+  }
+  if (duplicateCurrentApprovalCount > 0) {
+    throw new Error(`VALID_APPROVAL_COUNT_${duplicateCurrentApprovalCount + 1}`);
+  }
+  return comment;
+}
+
+function validateLink(pr, issue, contract, issueBodySha256) {
   const link = extractMarkedJson(pr.body, LINK_MARKER);
   exactKeys(
     link,
@@ -375,13 +398,15 @@ function validateLink(pr, issue, contract, approvalComment, issueBodySha256) {
   );
   if (
     link.schema !== POLICY.schema ||
+    !Number.isInteger(link.approvalCommentId) ||
+    link.approvalCommentId < 1 ||
     link.issueNumber !== issue.number ||
-    link.approvalCommentId !== approvalComment.id ||
     link.issueBodySha256 !== issueBodySha256 ||
     link.authorizedBaseSha !== contract.authorizedBaseSha
   ) {
     throw new Error('PR_LINK_BINDING_MISMATCH');
   }
+  return link;
 }
 
 function pathIsProtected(path) {
@@ -784,9 +809,14 @@ export function evaluateControlSnapshot(snapshot) {
     }
     const contract = validateContract(extractMarkedJson(snapshot.issue.body, CONTRACT_MARKER));
     const issueBodySha256 = sha256Text(snapshot.issue.body);
-    const approval = currentApproval(snapshot.issueComments ?? [], contract, issueBodySha256);
     validatePr(snapshot.pr, snapshot.relatedPullRequests, contract);
-    validateLink(snapshot.pr, snapshot.issue, contract, approval, issueBodySha256);
+    const link = validateLink(snapshot.pr, snapshot.issue, contract, issueBodySha256);
+    const approval = currentApproval(
+      snapshot.issueComments ?? [],
+      link.approvalCommentId,
+      contract,
+      issueBodySha256,
+    );
     const pathResult = validateChangedFiles(snapshot.changedFiles, contract);
     if (pathResult.lifecycleChange && contract.taskClass !== 'P2_AUTH_IMPLEMENTATION') {
       throw new Error('LIFECYCLE_CHANGE_REQUIRES_HUMAN');
@@ -847,6 +877,7 @@ export function evaluateControlSnapshot(snapshot) {
               : []
           ),
           ...(p2DraftOnly ? [] : ['APPROVAL_PR_AND_HEAD_REF_BINDING']),
+          ...(p2DraftOnly ? ['BOUNDED_CORRECTION_COUNTS'] : []),
           ...(
             p2DraftOnly && pathResult.databaseChange === 'SINGLE_MIGRATION_METADATA_SHAPE_ONLY'
               ? ['P2_DATABASE_MIGRATION_SEMANTICS']
@@ -1364,6 +1395,9 @@ export function formatResultLines(result) {
     CI_STATUS: result.ciStatus ?? 'UNKNOWN',
     REQUESTED_AUTOMATED_REPAIR_LIMIT: result.requestedRepairLimit ?? 0,
     HUMAN_CORRECTION_ROUND_COUNT: 'UNVERIFIED_FROM_READ_ONLY_GITHUB_METADATA',
+    LOCAL_CORRECTION_ROUND_COUNT: 'UNVERIFIED_FROM_READ_ONLY_GITHUB_METADATA',
+    PUBLISHED_CORRECTION_ROUND_COUNT: 'UNVERIFIED_FROM_READ_ONLY_GITHUB_METADATA',
+    FAILURE_CLASS: result.result === 'PASS' ? 'NONE' : 'UNVERIFIED_FROM_READ_ONLY_GITHUB_METADATA',
     AUTO_FIX_ROUND_COUNT: result.autoFixRoundCount ?? 0,
     AUTO_FIX_WRITE: result.autoFixWrite,
     AUTO_MERGE: result.autoMerge,

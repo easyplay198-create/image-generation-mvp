@@ -10,12 +10,14 @@
 - Observer state: `ACTIVE_POST_MERGE_NO_WRITE_SMOKE_VERIFIED`
 - Automatic repair/Codex dispatch: `DISABLED`
 - Effective automated repair limit: `0`
+- Maximum owner-authorized worktree-local corrections: `5`
+- Maximum owner-authorized published Draft-PR corrections: `2`
 - Default product phase: `P2_LOCKED`
 - Task-scoped P2 phases: `P2_DRAFT_ONLY` and the narrower `P2_AUTH_DRAFT_ONLY` (owner-approved exact Draft PR only)
 - Auto-merge: `DISABLED`
 - Merge authority: human only
 
-V2 adds a deterministic, fail-closed metadata observer to V1. It does not make GitHub comments transactional, does not create a writer, and never grants merge authority. The repository default remains `P2_LOCKED`. A separately owner-approved `P2_IMPLEMENTATION` task may enter only `P2_DRAFT_ONLY`; the narrower S1E profile may use only `P2_AUTH_IMPLEMENTATION + P2_AUTH_DRAFT_ONLY`. Both are exact Draft-PR authorizations, not global phase switches or permission to mark Ready or merge. V2 supersedes V1 for new tasks; V1 remains historical context.
+V2 adds a deterministic, fail-closed metadata observer to V1. It does not make GitHub comments transactional, does not create a writer, and never grants merge authority. The repository default remains `P2_LOCKED`. Separately approved P2 tasks may enter only their exact Draft-only phases. A zero automated-repair contract may still authorize bounded human-orchestrated worktree and Draft-PR corrections because those actions occur under the original exact scope and are never dispatched by the observer. V2 supersedes V1 for new tasks; V1 remains historical context.
 
 ## Why V2 has no writer
 
@@ -67,29 +69,22 @@ The S1E authentication profile uses the same exact keys with `taskClass` equal t
 
 The accepted task/phase pairs are exactly `ORDINARY_TASK + P2_LOCKED`, `CONTROL_PLANE_CHANGE + P2_LOCKED`, `P2_IMPLEMENTATION + P2_DRAFT_ONLY`, and `P2_AUTH_IMPLEMENTATION + P2_AUTH_DRAFT_ONLY`. Paths are exact, case-sensitive, NFC-normalized repository-relative files. Absolute paths, backslashes, empty segments, `.`/`..`, globs, regular expressions, and duplicates are rejected. The allowlist and final changed-path set must match exactly; a rename requires both paths. Only `CONTROL_PLANE_CHANGE` may change any root or nested `AGENTS.md`/`AGENTS.override.md`, `CODEOWNERS`, `.github/**`, or `docs/governance/**`, and its allowlist may contain only protected paths. `CONTROL_PLANE_CHANGE` and both P2 implementation classes must declare zero automated repair rounds.
 
-The approved visible body of a P2 Issue may separately authorize at most one human-orchestrated corrective update after the initial implementation. The Issue-body digest binds that limit, but the read-only observer cannot count or dispatch it. It must remain within the same Issue, branch, Draft PR, exact allowlist, dependencies, and frozen semantics; a second correction or any expansion returns `HOLD`. This does not change `maxRepairRounds: 0`, `effectiveAutoFixLimit: 0`, or the disabled writer.
+The approved visible body of a P2 Issue may authorize bounded convergence while the machine contract continues to declare `maxRepairRounds: 0`. The read-only observer never dispatches, pushes, or repairs. The human-audited budgets are separate: at most five worktree-local corrections before the first published implementation commit, and at most two human-orchestrated corrections after the initially Draft PR exists. Every correction remains inside the same Issue, worktree, non-force branch, Draft PR, exact allowlist, dependency set, migration count, and frozen semantics, and must rerun the fixed validation gates. The Issue-body digest binds both limits; the observer reports their counts as unverified.
 
-### One-time P2 pre-publication replacement
+### Failure classification and bounded convergence
 
-The prohibition on parallel tasks has one narrower exception for an unpublished P2 failure. A human owner may authorize exactly one replacement Issue only when the predecessor is closed `HOLD / not_planned`, its visible human corrective-update limit is exhausted, its remote task branch still points exactly to its authorized base SHA, and no pull request has ever existed from that head ref across any state or base branch. These facts prove that no implementation commit or PR was published from the predecessor; the predecessor must never reopen.
+- `BLOCKED_ENVIRONMENT`: deterministic dependency, worktree, toolchain, or ignored generated-content preparation failed without tracked dependency or lockfile-semantic drift. Restore the same task environment and continue; this does not consume an implementation correction.
+- `RETRY_LOCAL`: lint, strict typecheck, unit/integration test, migration check, build, or diff validation failed before the first published implementation commit. Correct only the direct failure inside the allowlist and consume one of at most five local corrections.
+- `RETRY_CI`: the exact Draft-PR head failed a fixed Quality gate. Correct only the direct failure on the same non-force branch and Draft PR and consume one of at most two published corrections.
+- `HOLD_SCOPE`: a required path, dependency, migration, capability, or semantic change is outside the approved contract.
+- `HOLD_SECURITY`: a real secret, production/shared resource, destructive migration, paid/business provider, permission expansion, or unauthorized external write is required or observed.
+- `FAIL_FINAL`: a bounded correction budget is exhausted or an acceptance criterion is impossible inside the frozen scope.
 
-The predecessor's `authorizedBaseSha` remains its immutable `predecessorLineageBaseSha`: it proves the unpublished lineage and must still equal the predecessor remote head, but it is not copied into the replacement contract. The replacement's `authorizedBaseSha` must instead equal the exact stable current default-branch SHA captured by two unchanged reads after every explicitly approved enabling control-plane PR has merged. The replacement Issue, approval, branch creation, PR base, and CI identity must all bind that current-main authorization base.
+Every iteration rechecks changed paths, lifecycle files, dependency versions, migration shape, secrets, and diff integrity. Nothing is published until the fixed local lint, typecheck, tests, applicable integration/migration checks, build, and `git diff --check` all succeed. Ordinary recoverable feedback must not create a sibling Issue, replacement branch, or error-specific governance PR.
 
-The direct comparison from `predecessorLineageBaseSha` to the replacement's current-main authorization base must be a strict forward lineage containing only the explicitly named enabling `CONTROL_PLANE_CHANGE` merges, and its combined changed-path set must contain only the exact protected governance paths approved for those merges. For the Issue #34 lineage, the frozen pre-clarification comparison from `47d4e74ca2e752e6888c15078a3bc09eb58b9e8d` to `c74a76143a4594054ef44e37fc66501f07728411` contains only merged PR #36 and exactly `AGENTS.md`, `docs/governance/GITHUB_AUTONOMOUS_DEVELOPMENT_CONTROL_PLANE_V2.md`, and `docs/governance/V5_P2_ENTRY_GOVERNANCE.md`. After this clarification is merged, its merge may be the only additional named control-plane merge before the replacement base is captured, and the combined changed-path set must still equal those same three files. Any other commit or path returns `HOLD`.
+### Historical task transition
 
-The replacement must otherwise preserve the predecessor's task class, phase, exact path allowlist, exact dependencies, migration count, and frozen product/security semantics. It may only incorporate compatibility knowledge learned from the failed unpublished attempt. It uses a new historically unique head ref and a new current-digest owner approval, records both bases, every enabling governance PR and merge SHA, the predecessor Issue/ref, plus the failed command, exit code, and failure class, and declares both `maxRepairRounds: 0` and a visible human corrective-update limit of zero. Any default-branch advance after the stable capture returns `HOLD` and requires a new explicit control decision; it never permits a silent rebase. Except for the exact Issue #39 pre-implementation environment-preparation resumption below, failure of the replacement is final `HOLD`; no second replacement, sibling task, branch reuse, force-push, predecessor reopening, or published-PR bypass is allowed.
-
-This exception does not create a writer, repair round, retry, Ready state, merge authority, deployment authority, or permission for production data, credentials, real email, or business providers. The V2 observer validates only the replacement task's ordinary exact metadata and CI evidence; it does not infer replacement lineage. Until direct human review records all eligibility evidence, handback must include `PREPUBLICATION_REPLACEMENT_ELIGIBILITY` in `UNVERIFIED_ITEMS`.
-
-### One-time Issue #39 pre-implementation environment-preparation resumption
-
-Issue #39 may receive exactly one `PRE_IMPLEMENTATION_ENVIRONMENT_PREPARATION` resumption only because direct evidence records `LOCAL_NPM_CACHE_METADATA_MISS_BEFORE_LOCKFILE_GENERATION` from `npm_config_offline=true npm_config_update_notifier=false npm install --package-lock-only --ignore-scripts` with exit `1`, before `package-lock.json` changed or Prisma generation, tests, build, commit, push, or PR occurred. Eligibility additionally requires its remote branch to remain identical to `ec7003b5a55512de3f1380676a336bcd5b8d8b1f`, with zero remote commits or changed paths and no PR history. A narrative assertion cannot substitute for these exact records.
-
-The enabling control-plane PR must merge before any resumption action. Its post-merge `main` must be captured twice unchanged, and the direct comparison from `ec7003b5a55512de3f1380676a336bcd5b8d8b1f` may contain only that PR's exact governance head commit plus its normal merge commit and exactly `AGENTS.md`, this document, and `docs/governance/V5_P2_ENTRY_GOVERNANCE.md`. Then, and only then, Issue #39 may be reopened once and revised to bind that stable `main`, the same head ref, the same 14 paths, exact dependencies, one migration, frozen semantics, zero automated repairs, zero human corrections, and one already-allocated environment-preparation resumption. The revised body requires a new SHA-256 and exactly one current owner approval. After that approval, the same remote branch may be fast-forwarded once without force from the old base to the revised base; any different old head, intervening commit, non-fast-forward, other path, or later `main` advance returns `HOLD`.
-
-The resumed work must start from a clean worktree and must not reuse the abandoned uncommitted source, schema, or migration draft. Before any such implementation file changes, it may add only the three frozen exact dependency declarations to `package.json` and execute exactly one revised-Issue-approved package-lock-only command with lifecycle scripts disabled. That approval must freeze the exact command and limit network access to public npm metadata or artifacts required by the frozen dependency graph; it authorizes no business provider, credential, lifecycle script, or unrelated dependency. Only success begins implementation. A second preparation failure, any later implementation or validation failure, second resumption, correction, second replacement, sibling task, scope drift, force-push, Ready, merge, real email, credential, production/shared database, Provider, or deployment returns final `HOLD`.
-
-This resumption is a one-time classification of an unpublished environment-preparation failure, not a writer, automated repair, human corrective update, general retry rule, second replacement, or authority granted merely by merging this document. Human review must record `PRE_IMPLEMENTATION_ENVIRONMENT_PREPARATION_RESUMPTION=PASS` against the revised Issue evidence before the branch alignment or preparation command is allowed.
+The earlier unpublished-replacement and one-time environment-resumption rules are historical evidence, not the active recovery mechanism after this bounded-convergence revision is merged and its no-write observer smoke succeeds. Issue #39 is the only closed historical task eligible for one owner-approved transition: bind a twice-read stable new `main`, preserve the same branch, exact fourteen paths, exact dependency versions, single `_p2_auth_` migration and frozen S1E semantics, and fast-forward without force. Its preserved local draft may then continue under the bounded local budget, including correction of the recorded Auth.js `handlers` GET/POST export binding. It must not create another Issue, replacement branch, migration, dependency, or governance exception.
 
 `requiredChecks` contains only the PR-head check that the evaluator directly validates: `Quality gates`. `Autonomous control gate` is only the fixed observer job identity; it is not a PR-head required/protected status check and must never be configured or represented as one.
 
@@ -97,7 +92,7 @@ The visible Issue fields are human context. The hidden contract becomes the mach
 
 ### Owner approval
 
-Exactly one current-digest approval must exist as an unedited owner comment. Locked tasks use:
+The initially Draft PR selects exactly one current approval by `approvalCommentId`. That exact comment must be an unedited owner comment for the current Issue digest. Locked tasks use:
 
 ```text
 <!-- CONTROL_PLANE_V2_APPROVAL_BEGIN
@@ -113,9 +108,9 @@ P2 tasks use the same approval plus the exact pre-authorized branch:
 CONTROL_PLANE_V2_APPROVAL_END -->
 ```
 
-The author must match owner ID, login, type, and `OWNER` association. Non-owner marker text is ignored. A well-formed older owner approval may remain as history after an Issue edit, but the current digest must have exactly one approval. The current approval must exactly bind contract phase, base, body digest, repair limit, and—only for P2—head ref. Malformed or edited owner markers return `HOLD`.
+The linked author must match owner ID, login, type, and `OWNER` association. The linked comment must be unedited and must exactly bind contract phase, base, body digest, repair limit, and—only for P2—head ref. A second well-formed approval for the same current digest is ambiguous and returns `HOLD`. Unlinked historical markers remain audit evidence; malformed, edited, or obsolete unlinked markers neither authorize nor poison the current task. Linking any malformed, edited, stale, deleted, non-owner, or mismatched approval returns `HOLD`.
 
-Locked-task approvals do not bind a PR number or head ref; this remains an explicit unverified item and a hard blocker for any future writer. A P2 approval pre-binds the exact head ref and the observer also requires an owner-created PR plus historical branch-name uniqueness. Neither shape creates a writer.
+The PR link binds the approval comment ID, Issue number, body digest and base. Locked-task approvals still do not pre-bind a head ref; this remains an explicit unverified item and a hard blocker for any future writer. A P2 approval pre-binds the exact head ref and the observer also requires an owner-created PR plus historical branch-name uniqueness. Neither shape creates a writer.
 
 ### Pull-request link
 
@@ -177,17 +172,17 @@ The new migration may be applied only by fixed Quality gates to fresh and repeat
 ## Mandatory `HOLD`
 
 - Any actor, identity, association, digest, base, PR, head, workflow, Check Suite, job, path, tree, mode, ledger, repair-budget, pagination, GraphQL, API, or two-read mismatch.
-- Edited, missing, duplicated, stale, deleted, malformed, or conflicting trusted evidence.
+- A linked approval that is edited, missing, duplicated-current, stale, deleted, malformed, non-owner, or conflicting. Unlinked historical markers are non-authoritative audit evidence.
 - A non-control-plane task touching a protected path; a control-plane allowlist containing a non-protected path; or a control-plane/P2 task declaring nonzero automated repair rounds.
 - Any task/phase pair outside the four frozen pairs; P2 without exact owner/branch/approval binding; P2 outside `V5_P2_ENTRY_GOVERNANCE.md`; authentication work outside `V5_P2_S1E_AUTH_CONTRACT.md`; a P2 migration that is unapproved or shape-invalid; any other migration lacking dedicated owner approval; a database change without human semantic review; destructive action, real secret, permission expansion, external write, provider call, or semantic ambiguity.
-- Any claimed pre-publication replacement whose predecessor is not closed `HOLD / not_planned`, whose remote head differs from its predecessor-lineage base, whose head ref has any PR history, whose predecessor may reopen, whose replacement base is not the stable current `main`, whose lineage-to-current-base comparison contains an unnamed merge or unapproved path, whose class/phase/paths/dependencies/migration count/semantics differ, whose replacement permits a human correction, whose lineage evidence is ambiguous, whose captured `main` later advances, or which is a second replacement.
-- Any claimed Issue #39 environment-preparation resumption without its exact recorded cache-metadata failure and no-lockfile/no-generation/no-test/no-build/no-publish evidence; without the named governance-only lineage, stable revised base, new body digest and owner approval; with a branch update other than the single permitted non-force fast-forward; with reuse of the abandoned local draft; with any different path, dependency, migration, command or network boundary; or which is a second resumption.
+- Any correction beyond the owner-approved local or published budget; any sibling Issue, replacement branch, force-push, new dependency, extra migration, semantic expansion, or publication before all fixed local gates pass.
+- Any Issue #39 transition without a twice-read stable post-activation `main`, a current body digest and linked owner approval, the same branch and fourteen paths, exact dependencies, single migration, non-force fast-forward, and preserved frozen S1E semantics.
 - Any automatic-repair, ready-for-review, push, auto-merge, or merge request.
 - Any assertion that branch protection, owner-review/no-bypass, visible-field semantics, PR/head-bound approval, observer activation, or observer required-check status is established without direct evidence.
 
 ## Activation and handback
 
-The currently merged observer and its post-merge no-write smoke are established historical evidence. Every proposed control-plane revision remains unactivated until its own human merge and post-merge no-write smoke. Separately verify branch protection for `Quality gates`, owner review/no-bypass behavior, the human semantic review that a P2 change matches its exact vertical slice, and `PREPUBLICATION_REPLACEMENT_ELIGIBILITY` whenever the one-time exception is used. The observer does not publish a protected result on the PR head and must not be configured or represented as such. Because the read-only metadata API does not expose exact shell-command exit codes, observer output marks those as unverified; the human task handback must report the commands and real exit codes from direct execution evidence.
+The currently merged observer and its post-merge no-write smoke are established historical evidence. Every proposed control-plane revision remains unactivated until its own human merge and post-merge no-write smoke. Separately verify branch protection for `Quality gates`, owner review/no-bypass behavior, the human semantic review that a P2 change matches its exact vertical slice, and the local/published correction counts. The observer does not publish a protected result on the PR head and must not be represented as a writer or merge authority. Because read-only GitHub metadata cannot prove local rounds or exact shell-command exit codes, the human task handback must report them from direct execution evidence.
 
 Every handback includes:
 
@@ -206,7 +201,9 @@ TEST_COMMANDS_AND_EXIT_CODES=
 CI_STATUS=
 REQUESTED_AUTOMATED_REPAIR_LIMIT=0
 AUTO_FIX_ROUND_COUNT=0
-HUMAN_CORRECTION_ROUND_COUNT=UNVERIFIED_FROM_READ_ONLY_GITHUB_METADATA
+LOCAL_CORRECTION_ROUND_COUNT=UNVERIFIED_FROM_READ_ONLY_GITHUB_METADATA
+PUBLISHED_CORRECTION_ROUND_COUNT=UNVERIFIED_FROM_READ_ONLY_GITHUB_METADATA
+FAILURE_CLASS=NONE|BLOCKED_ENVIRONMENT|RETRY_LOCAL|RETRY_CI|HOLD_SCOPE|HOLD_SECURITY|FAIL_FINAL
 P2_STATUS=LOCKED|DRAFT_ONLY
 OPERATION_PATH=
 OUTPUT_PATH=
