@@ -7,7 +7,7 @@
 - Authoritative branch: `main`
 - Historical Windows audit path: `E:\\EASY_PLAY_DEV_WORKSPACES_DISPOSABLE\\_audit_control\\AI_VISION_V5_S1B` (read-only evidence; never a development source)
 - V2 mode: `OBSERVER_ONLY`
-- Observer state: `ACTIVE_POST_MERGE_NO_WRITE_SMOKE_VERIFIED`
+- Observer state: `ACTIVE_OPEN_DRAFT_PR_READ_ONLY`
 - Automatic repair/Codex dispatch: `DISABLED`
 - Effective automated repair limit: `0`
 - Maximum owner-authorized worktree-local corrections: `5`
@@ -84,7 +84,7 @@ Every iteration rechecks changed paths, lifecycle files, dependency versions, mi
 
 ### Historical task transition
 
-The earlier unpublished-replacement and one-time environment-resumption rules are historical evidence, not the active recovery mechanism after this bounded-convergence revision is merged and its no-write observer smoke succeeds. Issue #39 is the only closed historical task eligible for one owner-approved transition: bind a twice-read stable new `main`, preserve the same branch, exact fourteen paths, exact dependency versions, single `_p2_auth_` migration and frozen S1E semantics, and fast-forward without force. Its preserved local draft may then continue under the bounded local budget, including correction of the recorded Auth.js `handlers` GET/POST export binding. It must not create another Issue, replacement branch, migration, dependency, or governance exception.
+The earlier unpublished-replacement and one-time environment-resumption rules are historical evidence, not the active recovery mechanism after the final simplification is ordinarily merged and `Quality gates` succeeds for the resulting exact `main` push. Issue #39 is the only closed historical task eligible for one owner-approved transition: bind a twice-read stable new `main`, preserve the same branch, exact fourteen paths, exact dependency versions, single `_p2_auth_` migration and frozen S1E semantics, and fast-forward without force. Its preserved local draft may then continue under the bounded local budget, including correction of the recorded Auth.js `handlers` GET/POST export binding and later ordinary validation feedback. It must not create another Issue, replacement branch, migration, dependency, or governance exception.
 
 `requiredChecks` contains only the PR-head check that the evaluator directly validates: `Quality gates`. `Autonomous control gate` is only the fixed observer job identity; it is not a PR-head required/protected status check and must never be configured or represented as one.
 
@@ -135,7 +135,7 @@ After merge, `.github/workflows/autonomous-control-gate-v2.yml` has only two ent
 - completion of the frozen `CI` workflow;
 - a PR conversation comment whose body is exactly `CONTROL_PLANE_V2_RECONCILE`, posted by the stable owner identity.
 
-The workflow is loaded from the default branch and checks out the immutable `github.workflow_sha` containing that workflow definition. It has read-only `actions`, `checks`, `contents`, `issues`, and `pull-requests` permissions, no secret access, and no artifact/cache restore. It never checks out or executes PR-head code. The currently merged observer has historical post-merge no-write smoke evidence. A later control-plane PR cannot run its proposed PR-head evaluator in this privileged observer; existing `CI` separately parses and tests the proposed scripts, and that proposed revision remains unactivated until a human merge plus a new post-merge no-write smoke.
+The workflow is loaded from the default branch and checks out the immutable `github.workflow_sha` containing that workflow definition. It has read-only `actions`, `checks`, `contents`, `issues`, and `pull-requests` permissions, no secret access, and no artifact/cache restore. It never checks out or executes PR-head code. A control-plane PR cannot run its proposed PR-head evaluator in this privileged observer; existing `CI` separately parses and tests the proposed scripts. A control-plane revision becomes active only after exact human semantic review, an explicitly authorized ordinary merge commit, and successful `Quality gates` for the resulting exact `main` push. Because the observer job intentionally accepts only pull-request CI or an exact owner reconcile on an open PR, a workflow-run job skipped solely for an upstream `main` push is expected and is neither `PASS` nor `HOLD`; no post-merge live-PR observer result is an activation prerequisite.
 
 The qualifying observer job uses repository-wide queued concurrency to reduce overlap, but concurrency is not treated as idempotency. Keeping it at job level prevents untrusted comments that fail the owner/exact-command condition from occupying the control queue. Mutable authority and CI metadata are read twice, followed by one final PR identity read. Any change produces `SNAPSHOT_CHANGED_DURING_READ` or `FINAL_PR_CHANGED_DURING_READ`.
 
@@ -178,11 +178,11 @@ The new migration may be applied only by fixed Quality gates to fresh and repeat
 - Any correction beyond the owner-approved local or published budget; any sibling Issue, replacement branch, force-push, new dependency, extra migration, semantic expansion, or publication before all fixed local gates pass.
 - Any Issue #39 transition without a twice-read stable post-activation `main`, a current body digest and linked owner approval, the same branch and fourteen paths, exact dependencies, single migration, non-force fast-forward, and preserved frozen S1E semantics.
 - Any automatic-repair, ready-for-review, push, auto-merge, or merge request.
-- Any assertion that branch protection, owner-review/no-bypass, visible-field semantics, PR/head-bound approval, observer activation, or observer required-check status is established without direct evidence.
+- Any assertion that branch protection, owner-review/no-bypass, visible-field semantics, PR/head-bound approval, control-plane activation, or observer required-check status is established without direct evidence.
 
 ## Activation and handback
 
-The currently merged observer and its post-merge no-write smoke are established historical evidence. Every proposed control-plane revision remains unactivated until its own human merge and post-merge no-write smoke. Separately verify branch protection for `Quality gates`, owner review/no-bypass behavior, the human semantic review that a P2 change matches its exact vertical slice, and the local/published correction counts. The observer does not publish a protected result on the PR head and must not be represented as a writer or merge authority. Because read-only GitHub metadata cannot prove local rounds or exact shell-command exit codes, the human task handback must report them from direct execution evidence.
+Every proposed control-plane revision remains inactive until exact human semantic review, an explicitly authorized ordinary merge commit, and successful `Quality gates` for the resulting exact `main` push. That main-push run validates the control evaluator syntax and complete tests in the ordinary CI boundary. The live metadata observer remains restricted to open task PRs and is not a post-merge activation mechanism. Separately verify branch protection for `Quality gates`, owner review/no-bypass behavior, the human semantic review that a P2 change matches its exact vertical slice, and the local/published correction counts. The observer does not publish a protected result on the PR head and must not be represented as a writer or merge authority. Because read-only GitHub metadata cannot prove local rounds or exact shell-command exit codes, the human task handback must report them from direct execution evidence.
 
 Every handback includes:
 
