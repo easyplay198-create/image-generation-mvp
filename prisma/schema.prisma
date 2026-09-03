@@ -82,6 +82,22 @@ enum P2IdempotencyStatus {
   SUCCEEDED
 }
 
+enum AssetTaskType {
+  INTERNAL_SINGLE_IMAGE
+}
+
+enum AssetClass {
+  IMAGE
+}
+
+enum AssetTaskOutputPurpose {
+  INTERNAL_TEST
+}
+
+enum AssetTaskStatus {
+  QUEUED
+}
+
 enum ProjectStatus {
   DRAFT
   ACTIVE
@@ -194,6 +210,7 @@ model Membership {
   createdSourceSnapshots SourceSnapshot[] @relation("SourceSnapshotCreatorMembership")
   createdProductTruthRevisions ProductTruthRevision[] @relation("ProductTruthRevisionCreatorMembership")
   createdTruthRevisionSourceLinks TruthRevisionSourceLink[] @relation("TruthRevisionSourceLinkCreatorMembership")
+  createdAssetTasks AssetTask[] @relation("AssetTaskCreatorMembership")
   p2DomainEvents P2DomainEvent[] @relation("P2DomainEventActorMembership")
   p2IdempotencyRecords P2IdempotencyRecord[] @relation("P2IdempotencyActorMembership")
 
@@ -217,6 +234,7 @@ model ProductProject {
   sourceSnapshots   SourceSnapshot[]
   truthRevisions    ProductTruthRevision[] @relation("ProductProjectTruthRevisions")
   activeTruthRevision ProductTruthRevision? @relation("ActiveProductTruthRevision", fields: [workspaceId, projectId, activeTruthRevisionId], references: [workspaceId, projectId, productTruthRevisionId], onDelete: Restrict, onUpdate: Cascade)
+  assetTasks         AssetTask[]
   p2DomainEvents    P2DomainEvent[]
   p2IdempotencyRecords P2IdempotencyRecord[]
 
@@ -242,6 +260,7 @@ model SourceSnapshot {
   productProject    ProductProject                 @relation(fields: [workspaceId, projectId], references: [workspaceId, projectId], onDelete: Restrict, onUpdate: Cascade)
   creatorMembership Membership                     @relation("SourceSnapshotCreatorMembership", fields: [workspaceId, createdByActorId], references: [workspaceId, userActorId], onDelete: Restrict, onUpdate: Cascade)
   truthRevisionSourceLinks TruthRevisionSourceLink[]
+  assetTasks         AssetTask[]                    @relation("AssetTaskProductSource")
 
   @@unique([workspaceId, projectId, sourceSnapshotId])
   @@index([workspaceId, projectId, capturedAt])
@@ -269,6 +288,7 @@ model ProductTruthRevision {
   childRevisions         ProductTruthRevision[]     @relation("ProductTruthRevisionParent")
   creatorMembership      Membership                 @relation("ProductTruthRevisionCreatorMembership", fields: [workspaceId, createdByActorId], references: [workspaceId, userActorId], onDelete: Restrict, onUpdate: Cascade)
   sourceLinks            TruthRevisionSourceLink[]
+  assetTasks             AssetTask[]                @relation("AssetTaskTruthRevision")
 
   @@unique([workspaceId, projectId, productTruthRevisionId])
   @@unique([workspaceId, projectId, revisionNumber])
@@ -295,6 +315,30 @@ model TruthRevisionSourceLink {
   @@unique([productTruthRevisionId, sourceSnapshotId])
   @@unique([productTruthRevisionId, sortOrder])
   @@index([workspaceId, projectId, sourceSnapshotId])
+  @@index([createdByActorId])
+}
+
+model AssetTask {
+  assetTaskId            String                 @id
+  workspaceId            String
+  projectId              String
+  taskType                AssetTaskType
+  assetClass              AssetClass
+  outputPurpose           AssetTaskOutputPurpose
+  truthRevisionId         String
+  productSourceSnapshotId String
+  status                   AssetTaskStatus
+  createdByActorId        String
+  createdAt               DateTime               @default(now())
+  productProject          ProductProject         @relation(fields: [workspaceId, projectId], references: [workspaceId, projectId], onDelete: Restrict, onUpdate: Cascade)
+  truthRevision           ProductTruthRevision   @relation("AssetTaskTruthRevision", fields: [workspaceId, projectId, truthRevisionId], references: [workspaceId, projectId, productTruthRevisionId], onDelete: Restrict, onUpdate: Cascade)
+  productSourceSnapshot   SourceSnapshot         @relation("AssetTaskProductSource", fields: [workspaceId, projectId, productSourceSnapshotId], references: [workspaceId, projectId, sourceSnapshotId], onDelete: Restrict, onUpdate: Cascade)
+  creatorMembership       Membership             @relation("AssetTaskCreatorMembership", fields: [workspaceId, createdByActorId], references: [workspaceId, userActorId], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([workspaceId, projectId, assetTaskId])
+  @@index([workspaceId, projectId, status, createdAt])
+  @@index([workspaceId, projectId, truthRevisionId])
+  @@index([workspaceId, projectId, productSourceSnapshotId])
   @@index([createdByActorId])
 }
 
