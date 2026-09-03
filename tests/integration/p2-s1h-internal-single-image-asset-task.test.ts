@@ -1,3 +1,4 @@
+import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import type { P2WorkspacePrincipalResolver } from "../../src/auth/workspace-membership-scope";
@@ -175,6 +176,104 @@ describe.sequential("P2 S1H internal single-image AssetTask", () => {
     ).resolves.toBe(1);
   });
 
+  it("isolates creation and exact replay of the same key in two valid Workspaces", async () => {
+    const fixtureA = await createActiveTruthFixture("same-key-a");
+    const fixtureB = await createActiveTruthFixture("same-key-b");
+    const handlerA = api(fixtureA.identity);
+    const handlerB = api(fixtureB.identity);
+    const sharedKey = uniqueId("shared-key");
+    const inputA = createBody(fixtureA);
+    const inputB = createBody(fixtureB);
+
+    const firstA = await handlerA.post(
+      assetTaskRequest(inputA, sharedKey),
+      projectContext(fixtureA.projectId),
+    );
+    const firstB = await handlerB.post(
+      assetTaskRequest(inputB, sharedKey),
+      projectContext(fixtureB.projectId),
+    );
+    expect(firstA.status).toBe(202);
+    expect(firstB.status).toBe(202);
+    const firstBodyA = await firstA.json();
+    const firstBodyB = await firstB.json();
+    expect(firstBodyA.assetTask.assetTaskId).not.toBe(
+      firstBodyB.assetTask.assetTaskId,
+    );
+    expect(firstBodyA.requestId).not.toBe(firstBodyB.requestId);
+
+    const replayA = await handlerA.post(
+      assetTaskRequest(inputA, sharedKey),
+      projectContext(fixtureA.projectId),
+    );
+    const replayB = await handlerB.post(
+      assetTaskRequest(inputB, sharedKey),
+      projectContext(fixtureB.projectId),
+    );
+    expect(replayA.status).toBe(202);
+    expect(replayB.status).toBe(202);
+    await expect(replayA.json()).resolves.toEqual(firstBodyA);
+    await expect(replayB.json()).resolves.toEqual(firstBodyB);
+
+    for (const { fixture, body } of [
+      { fixture: fixtureA, body: firstBodyA },
+      { fixture: fixtureB, body: firstBodyB },
+    ]) {
+      expect(body.assetTask).toMatchObject({
+        projectId: fixture.projectId,
+        truthRevisionId: fixture.truthRevisionId,
+        productSourceSnapshotId: fixture.sourceSnapshotId,
+        status: "QUEUED",
+      });
+      await expect(
+        database.assetTask.count({
+          where: {
+            workspaceId: fixture.identity.workspaceId,
+            projectId: fixture.projectId,
+          },
+        }),
+      ).resolves.toBe(1);
+      const records = await database.p2IdempotencyRecord.findMany({
+        where: {
+          workspaceId: fixture.identity.workspaceId,
+          operation: "asset_task.create.v1",
+          idempotencyKey: sharedKey,
+        },
+      });
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({
+        workspaceId: fixture.identity.workspaceId,
+        projectId: fixture.projectId,
+        actorId: fixture.identity.userActorId,
+        status: "SUCCEEDED",
+        responseStatus: 202,
+      });
+      expect(records[0].responseBody).toEqual(body);
+    }
+
+    await expect(
+      database.assetTask.count({
+        where: {
+          OR: [fixtureA, fixtureB].map((fixture) => ({
+            workspaceId: fixture.identity.workspaceId,
+            projectId: fixture.projectId,
+          })),
+        },
+      }),
+    ).resolves.toBe(2);
+    await expect(
+      database.p2IdempotencyRecord.count({
+        where: {
+          workspaceId: {
+            in: [fixtureA.identity.workspaceId, fixtureB.identity.workspaceId],
+          },
+          operation: "asset_task.create.v1",
+          idempotencyKey: sharedKey,
+        },
+      }),
+    ).resolves.toBe(2);
+  });
+
   it("rolls back both task and idempotency state when completion fails", async () => {
     const fixture = await createActiveTruthFixture("rollback");
     const response = await api(
@@ -304,6 +403,168 @@ describe.sequential("P2 S1H internal single-image AssetTask", () => {
     expect(crossRead.status).toBe(404);
     expect(missingRead.status).toBe(404);
     expect(await crossRead.json()).toEqual(await missingRead.json());
+  });
+
+  it("rejects four illegal dependency INSERTs directly in PostgreSQL", async () => {
+    const fixtureA = await createActiveTruthFixture("sql-dependencies-a");
+    const fixtureB = await createActiveTruthFixture("sql-dependencies-b");
+    const unlinkedSourceId = await createSource(
+      fixtureA.identity,
+      fixtureA.projectId,
+      "sql-unlinked",
+    );
+    const draft = await createP2ProductTruthRevision(
+      database,
+      {
+        projectId: fixtureA.projectId,
+        expectedCurrentRevisionId: fixtureA.truthRevisionId,
+        parentRevisionId: fixtureA.truthRevisionId,
+        truthBody: { name: "P2 S1H SQL draft dependency" },
+        productContinuity: "SAME_PRODUCT",
+        sourceBindings: [
+          {
+            sourceSnapshotId: fixtureA.sourceSnapshotId,
+            sourceRole: "PRODUCT_PRIMARY",
+            sortOrder: 0,
+          },
+        ],
+      },
+      resolverFor(fixtureA.identity),
+    );
+    expect(draft.revision.status).toBe("DRAFT");
+    expect(draft.sourceBindings).toEqual([
+      expect.objectContaining({
+        sourceSnapshotId: fixtureA.sourceSnapshotId,
+        linkStatus: "ACTIVE",
+      }),
+    ]);
+    await expect(
+      database.truthRevisionSourceLink.count({
+        where: {
+          workspaceId: fixtureA.identity.workspaceId,
+          projectId: fixtureA.projectId,
+          productTruthRevisionId: fixtureA.truthRevisionId,
+          sourceSnapshotId: unlinkedSourceId,
+        },
+      }),
+    ).resolves.toBe(0);
+    await expect(
+      database.membership.count({
+        where: {
+          workspaceId: fixtureA.identity.workspaceId,
+          userActorId: fixtureB.identity.userActorId,
+        },
+      }),
+    ).resolves.toBe(0);
+
+    const idempotencyScope = {
+      workspaceId: fixtureA.identity.workspaceId,
+      operation: "asset_task.create.v1",
+    };
+    const recordsBefore = await database.p2IdempotencyRecord.count({
+      where: idempotencyScope,
+    });
+    const dependencyError = {
+      code: "23514",
+      message:
+        "AssetTask requires the active truth revision and an active valid product source",
+    };
+    const cases = [
+      {
+        label: "unlinked-source",
+        truthRevisionId: fixtureA.truthRevisionId,
+        sourceSnapshotId: unlinkedSourceId,
+        createdByActorId: fixtureA.identity.userActorId,
+        expectedError: dependencyError,
+      },
+      {
+        label: "draft-revision",
+        truthRevisionId: draft.revision.productTruthRevisionId,
+        sourceSnapshotId: fixtureA.sourceSnapshotId,
+        createdByActorId: fixtureA.identity.userActorId,
+        expectedError: dependencyError,
+      },
+      {
+        label: "cross-workspace-source",
+        truthRevisionId: fixtureA.truthRevisionId,
+        sourceSnapshotId: fixtureB.sourceSnapshotId,
+        createdByActorId: fixtureA.identity.userActorId,
+        expectedError: dependencyError,
+      },
+      {
+        label: "cross-workspace-creator",
+        truthRevisionId: fixtureA.truthRevisionId,
+        sourceSnapshotId: fixtureA.sourceSnapshotId,
+        createdByActorId: fixtureB.identity.userActorId,
+        expectedError: {
+          code: "23503",
+          constraint: "AssetTask_scope_creator_fkey",
+        },
+      },
+    ];
+    const client = new Client({ connectionString });
+    try {
+      await client.connect();
+      for (const testCase of cases) {
+        const assetTaskId = uniqueId(testCase.label);
+        let insertError: unknown;
+        await client.query("BEGIN");
+        try {
+          await client.query(
+            `INSERT INTO "AssetTask" (
+              "assetTaskId",
+              "workspaceId",
+              "projectId",
+              "taskType",
+              "assetClass",
+              "outputPurpose",
+              "truthRevisionId",
+              "productSourceSnapshotId",
+              "status",
+              "createdByActorId"
+            ) VALUES (
+              $1,
+              $2,
+              $3,
+              'INTERNAL_SINGLE_IMAGE',
+              'IMAGE',
+              'INTERNAL_TEST',
+              $4,
+              $5,
+              'QUEUED',
+              $6
+            )`,
+            [
+              assetTaskId,
+              fixtureA.identity.workspaceId,
+              fixtureA.projectId,
+              testCase.truthRevisionId,
+              testCase.sourceSnapshotId,
+              testCase.createdByActorId,
+            ],
+          );
+        } catch (error) {
+          insertError = error;
+        } finally {
+          await client.query("ROLLBACK");
+        }
+        await expect(
+          database.assetTask.count({
+            where: {
+              workspaceId: fixtureA.identity.workspaceId,
+              projectId: fixtureA.projectId,
+              assetTaskId,
+            },
+          }),
+        ).resolves.toBe(0);
+        await expect(
+          database.p2IdempotencyRecord.count({ where: idempotencyScope }),
+        ).resolves.toBe(recordsBefore);
+        expect(insertError).toMatchObject(testCase.expectedError);
+      }
+    } finally {
+      await client.end();
+    }
   });
 
   it("enforces frozen table shape, dependency constraints, and task immutability", async () => {

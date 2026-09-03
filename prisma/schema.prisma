@@ -330,15 +330,15 @@ model AssetTask {
   status                   AssetTaskStatus
   createdByActorId        String
   createdAt               DateTime               @default(now())
-  productProject          ProductProject         @relation(fields: [workspaceId, projectId], references: [workspaceId, projectId], onDelete: Restrict, onUpdate: Cascade)
-  truthRevision           ProductTruthRevision   @relation("AssetTaskTruthRevision", fields: [workspaceId, projectId, truthRevisionId], references: [workspaceId, projectId, productTruthRevisionId], onDelete: Restrict, onUpdate: Cascade)
-  productSourceSnapshot   SourceSnapshot         @relation("AssetTaskProductSource", fields: [workspaceId, projectId, productSourceSnapshotId], references: [workspaceId, projectId, sourceSnapshotId], onDelete: Restrict, onUpdate: Cascade)
-  creatorMembership       Membership             @relation("AssetTaskCreatorMembership", fields: [workspaceId, createdByActorId], references: [workspaceId, userActorId], onDelete: Restrict, onUpdate: Cascade)
+  productProject          ProductProject         @relation(fields: [workspaceId, projectId], references: [workspaceId, projectId], onDelete: Restrict, onUpdate: Cascade, map: "AssetTask_scope_project_fkey")
+  truthRevision           ProductTruthRevision   @relation("AssetTaskTruthRevision", fields: [workspaceId, projectId, truthRevisionId], references: [workspaceId, projectId, productTruthRevisionId], onDelete: Restrict, onUpdate: Cascade, map: "AssetTask_scope_truthRevision_fkey")
+  productSourceSnapshot   SourceSnapshot         @relation("AssetTaskProductSource", fields: [workspaceId, projectId, productSourceSnapshotId], references: [workspaceId, projectId, sourceSnapshotId], onDelete: Restrict, onUpdate: Cascade, map: "AssetTask_scope_productSource_fkey")
+  creatorMembership       Membership             @relation("AssetTaskCreatorMembership", fields: [workspaceId, createdByActorId], references: [workspaceId, userActorId], onDelete: Restrict, onUpdate: Cascade, map: "AssetTask_scope_creator_fkey")
 
-  @@unique([workspaceId, projectId, assetTaskId])
-  @@index([workspaceId, projectId, status, createdAt])
-  @@index([workspaceId, projectId, truthRevisionId])
-  @@index([workspaceId, projectId, productSourceSnapshotId])
+  @@unique([workspaceId, projectId, assetTaskId], map: "AssetTask_scope_id_key")
+  @@index([workspaceId, projectId, status, createdAt], map: "AssetTask_scope_status_createdAt_idx")
+  @@index([workspaceId, projectId, truthRevisionId], map: "AssetTask_scope_truthRevision_idx")
+  @@index([workspaceId, projectId, productSourceSnapshotId], map: "AssetTask_scope_productSource_idx")
   @@index([createdByActorId])
 }
 
