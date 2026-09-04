@@ -113,9 +113,9 @@ Because the frozen P1 domain objects do not exist in the legacy Prisma schema, a
 3. No other `prisma/` path changes; existing migrations and `migration_lock.toml` remain byte-for-byte untouched.
 4. Human review confirms the new migration directory sorts after the authorized base's latest migration directory.
 5. Fixed Quality gates apply the migration both fresh and repeatedly only to disposable isolated PostgreSQL.
-6. Human semantic review confirms the SQL is additive-only. It may add the frozen tables, nullable fields, types, indexes, and constraints, but must not drop, truncate, rename, narrow, overwrite, or delete; execute DML/backfill or historical conversion; perform cutover or reset; add a destructive down migration; or touch a shared, persistent, or production database.
+6. Semantic review confirms the SQL is additive-only except for one valid ordinal-3 consumption of `P2_S1I_COMPAT_DDL_V1`. That single-use exception permits only the same-transaction, same-name, validated replacement of `P2DomainEvent_type_check` and `P2DomainEvent_body_check`, plus property-preserving `CREATE OR REPLACE FUNCTION public.p2_guard_asset_task_change()` with its OID and existing trigger binding unchanged, exactly as frozen by this document's complete S1I contract. Every other drop, replacement, truncation, rename, narrowing, overwrite, deletion, DML/backfill, historical conversion, cutover/reset, destructive down migration, and shared, persistent, or production database remains prohibited.
 
-The observer verifies only the exact file count, paths, statuses, modes, integration-test presence, and CI result. It does not parse SQL or prove additive semantics. Whenever this exception is used, `P2_DATABASE_MIGRATION_SEMANTICS` remains unverified until the human semantic review records direct evidence. Production migration or deployment always requires a later dedicated owner authorization.
+The observer verifies only the exact file count, paths, statuses, modes, integration-test presence, and CI result. It does not parse SQL or itself prove additive/compatibility semantics. For the autonomous program, the registered complete contract, two exact-Head independent reviews, isolated runtime proofs, and both program lifecycle gates are the required semantic successor evidence; outside that program `P2_DATABASE_MIGRATION_SEMANTICS` remains unverified until human semantic review records direct evidence. Production migration or deployment always requires a later dedicated owner authorization.
 
 ## Mandatory exclusions
 
@@ -217,3 +217,575 @@ Only child ordinal 3 may bind and consume that resource. Its changed-file set mu
 The ordinal-3 binding must name the exact ordinal-2 registration merge SHA. It requires a fresh isolated loopback-only PostgreSQL 17 instance, deterministic Provider/object-storage substitutes, the complete migration/concurrency/rollback evidence frozen by ordinal 2, successful exact-Head CI, and two distinct exact-Head independent reviewers. It grants no production/shared database, real Provider, deployment, credential, fee, destructive, or lifecycle-file authority.
 
 The resource lifecycle is `PROPOSED_INACTIVE -> AVAILABLE -> BOUND -> CONSUMED`, with `BOUND -> EXPIRED` on any pre-merge termination or expiry. Consumption exists only after the exact ordinal-3 one-parent squash merge whose parent equals the bound expected base. After that exact merge and successful exact-main-push CI, `P2_S1I_COMPAT_DDL_V1=CONSUMED` and the program delegation is permanently `TERMINATED`; neither can be replayed.
+
+<!-- P2_S1I_COMPLETE_CONTRACT_BEGIN -->
+
+## Complete P2 S1I internal-attempt, artifact-lineage contract
+
+### Contract status and exact scope
+
+This section is the complete repository-resident contract registered by child ordinal 2 of `AI_VISION_V5_S1I_AUTONOMOUS_DELIVERY_V1`. It is self-contained and does not rely on an external draft or an earlier V3/V4/V5 issue. Until ordinal 2 is merged by the active program delegation and its exact new-main `Quality gates` succeeds, its state is `PROPOSED_INACTIVE`. That activation changes only `P2_S1I_COMPAT_DDL_V1` to `AVAILABLE`; it does not run a migration, call a Provider, deploy, or touch data.
+
+The only implementation consumer is child ordinal 3. Its exact changed paths are:
+
+1. `app/api/p2/projects/[projectId]/asset-tasks/[assetTaskId]/artifacts/[artifactId]/revisions/[artifactRevisionId]/content/route.ts`
+2. `app/api/p2/projects/[projectId]/asset-tasks/[assetTaskId]/execute-internal-test/route.ts`
+3. `prisma/migrations/<new-14-digit-timestamp>_p2_internal_attempt_artifact_lineage/migration.sql`
+4. `prisma/schema.prisma`
+5. `src/http/p2-asset-task-api.ts`
+6. `src/tasks/asset-task.ts`
+7. `src/tasks/internal-asset-task-execution.ts`
+8. `tests/integration/p2-s1i-internal-attempt-artifact-lineage.test.ts`
+9. `tests/unit/p2-internal-attempt-artifact-api.test.ts`
+
+No tenth path, second migration, historical migration edit, dependency, lockfile, workflow, governance file, real Provider, shared/persistent database, production database, production object storage, deployment, credential, fee, destructive action, force operation, protection bypass, or security-check weakening is permitted.
+
+### Frozen predecessor
+
+The ordinal-2 design was reconciled against exact main `29ba2f1badac6023c42f1ca8e1d7aad67eedc5b1`:
+
+```text
+PRISMA_SCHEMA_PATH=prisma/schema.prisma
+PRISMA_SCHEMA_LENGTH=24647
+PRISMA_SCHEMA_SHA256=d2a0eb3f96ea7260888a46a9eee156304d41a042694ff3778f12c24207b553b9
+PREDECESSOR_MIGRATION=prisma/migrations/20260901130000_p2_internal_single_image_asset_task/migration.sql
+PREDECESSOR_MIGRATION_LENGTH=5304
+PREDECESSOR_MIGRATION_SHA256=0584f4efe01962c76fce87c68456cd308abd4585e926f9472cf579416a341f48
+EXISTING_ASSET_TASK_STATUS_VALUES=QUEUED
+EXISTING_EVENT_TYPE_VALUES=truth_revision.activated.v1
+EXISTING_ASSET_TASK_GUARD=public.p2_guard_asset_task_change()
+EXISTING_ASSET_TASK_TRIGGER=public.AssetTask_guard_change_trigger
+```
+
+Ordinal 3 must re-read the activated registration main, confirm this predecessor remains in its ancestry and confirm the actual immediate predecessor migration. Any incompatible intervening schema or migration change is `HOLD_SCOPE`; it is not repaired by widening this contract.
+
+### Deterministic output and identifiers
+
+```text
+PNG_BASE64=iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=
+mediaType=image/png
+width=1
+height=1
+byteSize=68
+contentDigest=431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460
+CONTENT_DIGEST_BASE64=QxztaRaiohoVbjhwGv5Vu9f4iWn7v8Vtf+CZ1H8mVGA=
+executorKind=INTERNAL_TEST_PNG_V1
+provider=INTERNAL_TEST
+model=INTERNAL_TEST_FIXED_PNG_1X1_V1
+promptVersion=INTERNAL_TEST_NO_PROMPT_V1
+generationAttemptId=p2:generation-attempt:<assetTaskId>:INITIAL:0
+idempotencyKey=p2:asset-task:<assetTaskId>:INITIAL:0
+artifactId=p2:artifact:<assetTaskId>
+artifactRevisionId=<artifactId>:revision:1
+generationAttemptStartedEventId=p2:event:generation-attempt:<generationAttemptId>:started:v1
+artifactRevisionCreatedEventId=p2:event:artifact-revision:<artifactRevisionId>:created:v1
+storageKey=p2/internal-test/<generationAttemptId>/artifact-revision-1.png
+```
+
+Before object construction, the implementation verifies the PNG signature, exact bytes, length, dimensions, and SHA-256. The deterministic object-store substitute receives `contentType=image/png` and lowercase metadata keys `sha256`, `generationattemptid`, and `artifactrevisionid` with the exact values above. No business Provider call or `provider_call.completed.v1` event exists in this slice.
+
+### Canonical digest objects and golden vector
+
+Canonical JSON recursively normalizes every string leaf to NFC, rejects a stored identifier when NFC would change it, sorts object keys by Unicode code point, preserves array order, uses JSON numbers without alternate textual forms, emits UTF-8 with no BOM/whitespace/final LF, and hashes those exact bytes with SHA-256 lowercase hex.
+
+`inputBindingDigest` hashes exactly this six-key object and no other key, with the serialized key order shown:
+
+```json
+{"assetTaskId":"p2_asset_task_fixture","contentDigestAtBinding":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","projectId":"project_fixture","sourceSnapshotId":"source_fixture","truthRevisionId":"truth_fixture","workspaceId":"ws_fixture"}
+```
+
+```text
+inputBindingDigest=175e2683d6418c2aee377528c2aed48f4e53d393099f78ee4ec96d07bb2df1ae
+```
+
+`inputFingerprint` hashes exactly this seven-key object and no other key, after inserting the calculated binding digest:
+
+```json
+{"autoRedoOrdinal":0,"executorKind":"INTERNAL_TEST_PNG_V1","inputBindingDigest":"175e2683d6418c2aee377528c2aed48f4e53d393099f78ee4ec96d07bb2df1ae","model":"INTERNAL_TEST_FIXED_PNG_1X1_V1","promptVersion":"INTERNAL_TEST_NO_PROMPT_V1","provider":"INTERNAL_TEST","trigger":"INITIAL"}
+```
+
+```text
+inputFingerprint=960871b2efb209661119125ba76c8c39b53ff2a06752289f96c252da2ee512d0
+```
+
+Tests must independently serialize and hash both vectors; comparison against hard-coded digests alone is insufficient.
+
+### Exact enum and existing-table changes
+
+The migration adds `RUNNING`, `SUCCEEDED`, `FAILED`, and `HARD_BLOCKED` to existing enum `AssetTaskStatus`, after proving its pre-migration ordered labels are exactly `QUEUED`. Any check or function created in the same transaction compares `AssetTask.status::text`, so a newly added enum label is never used as an enum literal before commit.
+
+The migration creates exactly these enums and labels in the shown order:
+
+```text
+GenerationAttemptTrigger = INITIAL, AUTO_REDO, USER_REDO
+GenerationAttemptProvider = INTERNAL_TEST
+GenerationAttemptExecutorKind = INTERNAL_TEST_PNG_V1
+GenerationAttemptStatus = QUEUED, SUBMITTING, SUBMITTED, RUNNING, SUCCEEDED, FAILED, CANCELED, AMBIGUOUS
+ArtifactLifecycleStatus = ACTIVE, DELETED
+ArtifactRevisionOrigin = PROVIDER, SYSTEM_LAYOUT, USER_EDIT, PLATFORM_DERIVATION
+ArtifactRevisionStatus = CANDIDATE, ACCEPTED, REJECTED, SUPERSEDED, REVOKED
+P2SourceLineageRole = PRODUCT_SOURCE
+P2SourceLineageStatus = ACTIVE, INVALIDATED
+```
+
+Existing `AssetTask` receives exactly four nullable columns: `currentArtifactRevisionId TEXT`, `startedAt TIMESTAMP(3)`, `finishedAt TIMESTAMP(3)`, and `failureCode TEXT`. Existing tables receive only these supporting unique indexes:
+
+```text
+AssetTask_scope_id_truthRevision_key (workspaceId, projectId, assetTaskId, truthRevisionId) UNIQUE
+AssetTask_scope_id_source_key (workspaceId, projectId, assetTaskId, productSourceSnapshotId) UNIQUE
+SourceSnapshot_scope_id_contentDigest_key (workspaceId, projectId, sourceSnapshotId, contentDigest) UNIQUE
+```
+
+### Exact new tables and columns
+
+Every listed column is mandatory; no unlisted column may be added.
+
+```text
+GenerationAttempt
+  generationAttemptId TEXT NOT NULL PRIMARY KEY
+  workspaceId TEXT NOT NULL
+  projectId TEXT NOT NULL
+  assetTaskId TEXT NOT NULL
+  trigger GenerationAttemptTrigger NOT NULL DEFAULT INITIAL
+  autoRedoOrdinal INTEGER NOT NULL DEFAULT 0
+  idempotencyKey TEXT NOT NULL
+  inputFingerprint TEXT NOT NULL
+  truthRevisionId TEXT NOT NULL
+  brandKitRevisionId TEXT NULL
+  visualPlanId TEXT NULL
+  provider GenerationAttemptProvider NOT NULL DEFAULT INTERNAL_TEST
+  model TEXT NOT NULL
+  promptVersion TEXT NOT NULL
+  executorKind GenerationAttemptExecutorKind NOT NULL
+  status GenerationAttemptStatus NOT NULL
+  transportRetryCount INTEGER NOT NULL DEFAULT 0
+  providerRequestId TEXT NULL
+  errorCode TEXT NULL
+  usageBody JSONB NULL
+  costBody JSONB NULL
+  startedAt TIMESTAMP(3) NULL
+  finishedAt TIMESTAMP(3) NULL
+  createdAt TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+
+GenerationAttemptSourceLink
+  linkId TEXT NOT NULL PRIMARY KEY
+  workspaceId TEXT NOT NULL
+  projectId TEXT NOT NULL
+  assetTaskId TEXT NOT NULL
+  generationAttemptId TEXT NOT NULL
+  sourceSnapshotId TEXT NOT NULL
+  inputRole P2SourceLineageRole NOT NULL
+  inputOrder INTEGER NOT NULL
+  contentDigestAtBinding TEXT NOT NULL
+  linkStatus P2SourceLineageStatus NOT NULL DEFAULT ACTIVE
+  createdByActorId TEXT NOT NULL
+  createdAt TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+
+Artifact
+  artifactId TEXT NOT NULL PRIMARY KEY
+  workspaceId TEXT NOT NULL
+  projectId TEXT NOT NULL
+  assetTaskId TEXT NOT NULL
+  assetClass AssetClass NOT NULL DEFAULT IMAGE
+  lifecycleStatus ArtifactLifecycleStatus NOT NULL DEFAULT ACTIVE
+  createdByActorId TEXT NOT NULL
+  selectedArtifactRevisionId TEXT NULL
+  deletedAt TIMESTAMP(3) NULL
+  deletedByActorId TEXT NULL
+  createdAt TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+
+ArtifactRevision
+  artifactRevisionId TEXT NOT NULL PRIMARY KEY
+  workspaceId TEXT NOT NULL
+  projectId TEXT NOT NULL
+  artifactId TEXT NOT NULL
+  assetTaskId TEXT NOT NULL
+  revisionNumber INTEGER NOT NULL DEFAULT 1
+  kind AssetClass NOT NULL DEFAULT IMAGE
+  origin ArtifactRevisionOrigin NOT NULL DEFAULT SYSTEM_LAYOUT
+  truthRevisionId TEXT NOT NULL
+  generationAttemptId TEXT NULL
+  editableDocumentId TEXT NULL
+  parentArtifactRevisionId TEXT NULL
+  brandKitRevisionId TEXT NULL
+  visualPlanId TEXT NULL
+  inputBindingDigest TEXT NOT NULL
+  contentDigest TEXT NOT NULL
+  storageLocator TEXT NULL
+  textBody TEXT NULL
+  status ArtifactRevisionStatus NOT NULL DEFAULT CANDIDATE
+  mediaType TEXT NOT NULL DEFAULT image/png
+  byteSize BIGINT NOT NULL DEFAULT 68
+  width INTEGER NOT NULL DEFAULT 1
+  height INTEGER NOT NULL DEFAULT 1
+  createdByActorId TEXT NULL
+  createdAt TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+
+ArtifactRevisionSourceLink
+  linkId TEXT NOT NULL PRIMARY KEY
+  workspaceId TEXT NOT NULL
+  projectId TEXT NOT NULL
+  assetTaskId TEXT NOT NULL
+  artifactRevisionId TEXT NOT NULL
+  sourceSnapshotId TEXT NOT NULL
+  sourceRole P2SourceLineageRole NOT NULL
+  inputOrder INTEGER NOT NULL
+  contentDigestAtBinding TEXT NOT NULL
+  inheritedFromAttemptId TEXT NOT NULL
+  linkStatus P2SourceLineageStatus NOT NULL DEFAULT ACTIVE
+  createdByActorId TEXT NOT NULL
+  createdAt TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+```
+
+`brandKitRevisionId` and `visualPlanId` are real nullable columns and are fixed to NULL for this slice. `ArtifactRevision` has exactly one nonblank representation: nonblank `storageLocator` XOR nonblank `textBody`. This slice additionally requires nonnull `generationAttemptId` and `storageLocator`; null `textBody`, `editableDocumentId`, `parentArtifactRevisionId`, `brandKitRevisionId`, `visualPlanId`, and `createdByActorId`; revision 1, IMAGE, SYSTEM_LAYOUT, CANDIDATE, image/png, 68 bytes, width 1, and height 1.
+
+### Exact unique keys and indexes
+
+The migration creates the following exact unique keys:
+
+```text
+GenerationAttempt_scope_id_key (workspaceId, projectId, generationAttemptId)
+GenerationAttempt_scope_task_id_key (workspaceId, projectId, assetTaskId, generationAttemptId)
+GenerationAttempt_scope_task_truth_id_key (workspaceId, projectId, assetTaskId, truthRevisionId, generationAttemptId)
+GenerationAttempt_task_trigger_ordinal_key (workspaceId, projectId, assetTaskId, trigger, autoRedoOrdinal)
+GenerationAttempt_idempotency_key (workspaceId, idempotencyKey)
+GenerationAttemptSourceLink_attempt_source_role_key (workspaceId, projectId, generationAttemptId, sourceSnapshotId, inputRole)
+GenerationAttemptSourceLink_attempt_inputOrder_key (workspaceId, projectId, generationAttemptId, inputOrder)
+GenerationAttemptSourceLink_inheritance_key (workspaceId, projectId, generationAttemptId, sourceSnapshotId, inputRole, inputOrder, contentDigestAtBinding)
+Artifact_scope_id_key (workspaceId, projectId, artifactId)
+Artifact_scope_id_task_key (workspaceId, projectId, artifactId, assetTaskId)
+Artifact_task_key (workspaceId, projectId, assetTaskId)
+Artifact_scope_task_selected_key (workspaceId, projectId, assetTaskId, selectedArtifactRevisionId)
+ArtifactRevision_scope_id_key (workspaceId, projectId, artifactRevisionId)
+ArtifactRevision_scope_artifact_id_key (workspaceId, projectId, artifactId, artifactRevisionId)
+ArtifactRevision_scope_artifact_task_id_key (workspaceId, projectId, artifactId, assetTaskId, artifactRevisionId)
+ArtifactRevision_scope_task_id_key (workspaceId, projectId, assetTaskId, artifactRevisionId)
+ArtifactRevision_scope_task_id_attempt_key (workspaceId, projectId, assetTaskId, artifactRevisionId, generationAttemptId)
+ArtifactRevision_artifact_revisionNumber_key (workspaceId, projectId, artifactId, revisionNumber)
+ArtifactRevision_generationAttempt_key (workspaceId, projectId, generationAttemptId)
+ArtifactRevisionSourceLink_revision_source_role_key (workspaceId, projectId, artifactRevisionId, sourceSnapshotId, sourceRole)
+ArtifactRevisionSourceLink_revision_inputOrder_key (workspaceId, projectId, artifactRevisionId, inputOrder)
+```
+
+The exact nonunique indexes are:
+
+```text
+AssetTask_scope_currentArtifactRevision_idx (workspaceId, projectId, currentArtifactRevisionId)
+GenerationAttempt_scope_task_status_createdAt_idx (workspaceId, projectId, assetTaskId, status, createdAt)
+GenerationAttempt_scope_truthRevision_idx (workspaceId, projectId, truthRevisionId)
+GenerationAttemptSourceLink_scope_source_idx (workspaceId, projectId, sourceSnapshotId)
+GenerationAttemptSourceLink_createdByActorId_idx (createdByActorId)
+Artifact_scope_lifecycle_createdAt_idx (workspaceId, projectId, lifecycleStatus, createdAt)
+Artifact_createdByActorId_idx (createdByActorId)
+Artifact_deletedByActorId_idx (deletedByActorId)
+ArtifactRevision_scope_task_status_createdAt_idx (workspaceId, projectId, assetTaskId, status, createdAt)
+ArtifactRevision_scope_truthRevision_idx (workspaceId, projectId, truthRevisionId)
+ArtifactRevision_scope_contentDigest_idx (workspaceId, projectId, contentDigest)
+ArtifactRevision_parent_idx (workspaceId, projectId, parentArtifactRevisionId)
+ArtifactRevisionSourceLink_scope_source_idx (workspaceId, projectId, sourceSnapshotId)
+ArtifactRevisionSourceLink_createdByActorId_idx (createdByActorId)
+```
+
+### Exact foreign keys
+
+Every foreign key uses `ON UPDATE CASCADE ON DELETE RESTRICT`. Local and referenced column order is exact:
+
+| Constraint | Local table and columns | Referenced table and columns |
+| --- | --- | --- |
+| `GenerationAttempt_scope_task_truth_fkey` | `GenerationAttempt(workspaceId, projectId, assetTaskId, truthRevisionId)` | `AssetTask(workspaceId, projectId, assetTaskId, truthRevisionId)` |
+| `GenerationAttemptSourceLink_scope_attempt_fkey` | `GenerationAttemptSourceLink(workspaceId, projectId, assetTaskId, generationAttemptId)` | `GenerationAttempt(workspaceId, projectId, assetTaskId, generationAttemptId)` |
+| `GenerationAttemptSourceLink_scope_task_source_fkey` | `GenerationAttemptSourceLink(workspaceId, projectId, assetTaskId, sourceSnapshotId)` | `AssetTask(workspaceId, projectId, assetTaskId, productSourceSnapshotId)` |
+| `GenerationAttemptSourceLink_scope_source_digest_fkey` | `GenerationAttemptSourceLink(workspaceId, projectId, sourceSnapshotId, contentDigestAtBinding)` | `SourceSnapshot(workspaceId, projectId, sourceSnapshotId, contentDigest)` |
+| `GenerationAttemptSourceLink_scope_creator_fkey` | `GenerationAttemptSourceLink(workspaceId, createdByActorId)` | `Membership(workspaceId, userActorId)` |
+| `Artifact_scope_task_fkey` | `Artifact(workspaceId, projectId, assetTaskId)` | `AssetTask(workspaceId, projectId, assetTaskId)` |
+| `Artifact_scope_creator_fkey` | `Artifact(workspaceId, createdByActorId)` | `Membership(workspaceId, userActorId)` |
+| `Artifact_scope_deletedBy_fkey` | `Artifact(workspaceId, deletedByActorId)` | `Membership(workspaceId, userActorId)` |
+| `ArtifactRevision_scope_artifact_task_fkey` | `ArtifactRevision(workspaceId, projectId, artifactId, assetTaskId)` | `Artifact(workspaceId, projectId, artifactId, assetTaskId)` |
+| `ArtifactRevision_scope_attempt_fkey` | `ArtifactRevision(workspaceId, projectId, assetTaskId, truthRevisionId, generationAttemptId)` | `GenerationAttempt(workspaceId, projectId, assetTaskId, truthRevisionId, generationAttemptId)` |
+| `ArtifactRevision_parent_same_artifact_fkey` | `ArtifactRevision(workspaceId, projectId, artifactId, parentArtifactRevisionId)` | `ArtifactRevision(workspaceId, projectId, artifactId, artifactRevisionId)` |
+| `ArtifactRevision_scope_creator_fkey` | `ArtifactRevision(workspaceId, createdByActorId)` | `Membership(workspaceId, userActorId)` |
+| `ArtifactRevisionSourceLink_scope_revision_attempt_fkey` | `ArtifactRevisionSourceLink(workspaceId, projectId, assetTaskId, artifactRevisionId, inheritedFromAttemptId)` | `ArtifactRevision(workspaceId, projectId, assetTaskId, artifactRevisionId, generationAttemptId)` |
+| `ArtifactRevisionSourceLink_inherited_binding_fkey` | `ArtifactRevisionSourceLink(workspaceId, projectId, inheritedFromAttemptId, sourceSnapshotId, sourceRole, inputOrder, contentDigestAtBinding)` | `GenerationAttemptSourceLink(workspaceId, projectId, generationAttemptId, sourceSnapshotId, inputRole, inputOrder, contentDigestAtBinding)` |
+| `ArtifactRevisionSourceLink_scope_source_digest_fkey` | `ArtifactRevisionSourceLink(workspaceId, projectId, sourceSnapshotId, contentDigestAtBinding)` | `SourceSnapshot(workspaceId, projectId, sourceSnapshotId, contentDigest)` |
+| `ArtifactRevisionSourceLink_scope_creator_fkey` | `ArtifactRevisionSourceLink(workspaceId, createdByActorId)` | `Membership(workspaceId, userActorId)` |
+
+Three cyclic pointer foreign keys are additionally `DEFERRABLE INITIALLY DEFERRED`:
+
+| Constraint | Local columns | Referenced columns |
+| --- | --- | --- |
+| `Artifact_selected_revision_fkey` | `Artifact(workspaceId, projectId, artifactId, selectedArtifactRevisionId)` | `ArtifactRevision(workspaceId, projectId, artifactId, artifactRevisionId)` |
+| `AssetTask_current_artifact_revision_direct_fkey` | `AssetTask(workspaceId, projectId, assetTaskId, currentArtifactRevisionId)` | `ArtifactRevision(workspaceId, projectId, assetTaskId, artifactRevisionId)` |
+| `AssetTask_current_selected_equivalence_fkey` | `AssetTask(workspaceId, projectId, assetTaskId, currentArtifactRevisionId)` | `Artifact(workspaceId, projectId, assetTaskId, selectedArtifactRevisionId)` |
+
+The equivalence foreign key never substitutes for the direct ArtifactRevision foreign key.
+
+### Exact CHECK predicates
+
+All identifiers and digests are nonblank, trim-stable strings; digests match `^[0-9a-f]{64}$`; `autoRedoOrdinal`, `inputOrder`, `transportRetryCount`, dimensions, sizes, and revision numbers are nonnegative or positive as their names require. The named checks are exactly:
+
+```text
+GenerationAttempt_identifiers_check
+GenerationAttempt_p2_contract_check
+GenerationAttempt_state_check
+GenerationAttemptSourceLink_p2_contract_check
+Artifact_p2_contract_check
+ArtifactRevision_content_representation_check
+ArtifactRevision_p2_contract_check
+ArtifactRevisionSourceLink_p2_contract_check
+AssetTask_currentArtifactRevisionId_check
+AssetTask_state_check
+AssetTask_failureCode_check
+```
+
+For this slice, `GenerationAttempt_p2_contract_check` fixes `trigger=INITIAL`, `autoRedoOrdinal=0`, `provider=INTERNAL_TEST`, `model=INTERNAL_TEST_FIXED_PNG_1X1_V1`, `promptVersion=INTERNAL_TEST_NO_PROMPT_V1`, `executorKind=INTERNAL_TEST_PNG_V1`, null `brandKitRevisionId`, `visualPlanId`, `providerRequestId`, `usageBody`, and `costBody`, and `transportRetryCount=0`.
+
+`GenerationAttempt_state_check` is the exact disjunction:
+
+```text
+RUNNING   => startedAt NOT NULL, finishedAt NULL, errorCode NULL
+SUCCEEDED => startedAt NOT NULL, finishedAt NOT NULL, finishedAt >= startedAt, errorCode NULL
+FAILED    => startedAt NOT NULL, finishedAt NOT NULL, finishedAt >= startedAt,
+             errorCode IN (INTERNAL_TEST_EXECUTOR_FAILED, INTERNAL_TEST_OUTPUT_INVALID,
+                           OBJECT_WRITE_FAILED_COMPENSATED, FINALIZE_FAILED_COMPENSATED)
+AMBIGUOUS => startedAt NOT NULL, finishedAt NOT NULL, finishedAt >= startedAt,
+             errorCode IN (OBJECT_WRITE_FAILED_COMPENSATION_FAILED,
+                           FINALIZE_FAILED_COMPENSATION_FAILED)
+```
+
+No other GenerationAttempt state is writable by this slice. The FAILED and AMBIGUOUS error sets are disjoint.
+
+`AssetTask_state_check` and `AssetTask_failureCode_check` jointly enforce:
+
+```text
+QUEUED       => startedAt NULL, finishedAt NULL, failureCode NULL, currentArtifactRevisionId NULL
+RUNNING      => startedAt NOT NULL, finishedAt NULL, failureCode NULL, currentArtifactRevisionId NULL
+SUCCEEDED    => startedAt NOT NULL, finishedAt NOT NULL, finishedAt >= startedAt,
+                failureCode NULL, currentArtifactRevisionId NOT NULL
+FAILED       => startedAt NOT NULL, finishedAt NOT NULL, finishedAt >= startedAt,
+                currentArtifactRevisionId NULL, failureCode in the FAILED error set above
+HARD_BLOCKED => startedAt NOT NULL, finishedAt NOT NULL, finishedAt >= startedAt,
+                currentArtifactRevisionId NULL, failureCode in the AMBIGUOUS error set above
+```
+
+The only AssetTask transitions are `QUEUED -> RUNNING`, `RUNNING -> SUCCEEDED`, `RUNNING -> FAILED`, and `RUNNING -> HARD_BLOCKED`. `AssetTask.status=AMBIGUOUS` is forbidden. The cross-object mapping is exactly `GenerationAttempt.status=AMBIGUOUS` plus `AssetTask.status=HARD_BLOCKED`; it is P1-enum-compatible and owner-frozen for S1I, not P1-mandated.
+
+### Exact event CHECK replacements
+
+The migration drops and recreates only `P2DomainEvent_type_check` and `P2DomainEvent_body_check`, under the same names and inside the same transaction. Both finish `convalidated=true`; `NOT VALID` is forbidden.
+
+`P2DomainEvent_type_check` is exactly:
+
+```sql
+CHECK ("eventType" IN (
+  'truth_revision.activated.v1',
+  'generation_attempt.started.v1',
+  'artifact_revision.created.v1'
+))
+```
+
+`P2DomainEvent_body_check` is an exact `CASE "eventType"` expression. The `truth_revision.activated.v1` branch is byte-semantically equivalent to the predecessor predicate and preserves its SQL TRUE/NULL acceptance behavior, including allowance of extra keys. The two new branches each use a nested `CASE WHEN jsonb_typeof("eventBody") = 'object' THEN (...) IS TRUE ELSE FALSE END`, so object operators never execute on SQL NULL, JSON null, strings, numbers, booleans, or arrays.
+
+The `generation_attempt.started.v1` object has exactly the six keys `assetTaskId`, `autoRedoOrdinal`, `generationAttemptId`, `model`, `provider`, and `trigger`; all IDs/model/provider/trigger are JSON strings, ordinal is a JSON number, trigger is INITIAL, ordinal is numeric zero, provider is INTERNAL_TEST, and model is INTERNAL_TEST_FIXED_PNG_1X1_V1. The `artifact_revision.created.v1` object has exactly the five string keys `artifactRevisionId`, `assetTaskId`, `contentDigest`, `kind`, and `origin`; kind is IMAGE, origin is SYSTEM_LAYOUT, and digest is the frozen PNG digest.
+
+The complete replacement predicate is:
+
+```sql
+CHECK (
+  CASE "eventType"
+    WHEN 'truth_revision.activated.v1' THEN
+      jsonb_typeof("eventBody") = 'object'
+      AND "eventBody" ? 'truthRevisionId'
+      AND jsonb_typeof("eventBody" -> 'truthRevisionId') = 'string'
+      AND "eventBody" ? 'parentRevisionId'
+      AND (
+        ("eventBody" -> 'parentRevisionId') = 'null'::jsonb
+        OR jsonb_typeof("eventBody" -> 'parentRevisionId') = 'string'
+      )
+      AND "eventBody" ? 'previousActiveTruthRevisionId'
+      AND (
+        ("eventBody" -> 'previousActiveTruthRevisionId') = 'null'::jsonb
+        OR jsonb_typeof("eventBody" -> 'previousActiveTruthRevisionId') = 'string'
+      )
+      AND "eventBody" ? 'projectId'
+      AND "eventBody" ->> 'projectId' = "projectId"
+    WHEN 'generation_attempt.started.v1' THEN
+      CASE WHEN jsonb_typeof("eventBody") = 'object' THEN (
+        "eventBody" ?& ARRAY[
+          'assetTaskId', 'autoRedoOrdinal', 'generationAttemptId',
+          'model', 'provider', 'trigger'
+        ]::text[]
+        AND "eventBody" - ARRAY[
+          'assetTaskId', 'autoRedoOrdinal', 'generationAttemptId',
+          'model', 'provider', 'trigger'
+        ]::text[] = '{}'::jsonb
+        AND jsonb_typeof("eventBody" -> 'assetTaskId') = 'string'
+        AND jsonb_typeof("eventBody" -> 'autoRedoOrdinal') = 'number'
+        AND jsonb_typeof("eventBody" -> 'generationAttemptId') = 'string'
+        AND jsonb_typeof("eventBody" -> 'model') = 'string'
+        AND jsonb_typeof("eventBody" -> 'provider') = 'string'
+        AND jsonb_typeof("eventBody" -> 'trigger') = 'string'
+        AND "eventBody" -> 'autoRedoOrdinal' = '0'::jsonb
+        AND "eventBody" ->> 'model' = 'INTERNAL_TEST_FIXED_PNG_1X1_V1'
+        AND "eventBody" ->> 'provider' = 'INTERNAL_TEST'
+        AND "eventBody" ->> 'trigger' = 'INITIAL'
+      ) IS TRUE ELSE FALSE END
+    WHEN 'artifact_revision.created.v1' THEN
+      CASE WHEN jsonb_typeof("eventBody") = 'object' THEN (
+        "eventBody" ?& ARRAY[
+          'artifactRevisionId', 'assetTaskId', 'contentDigest', 'kind', 'origin'
+        ]::text[]
+        AND "eventBody" - ARRAY[
+          'artifactRevisionId', 'assetTaskId', 'contentDigest', 'kind', 'origin'
+        ]::text[] = '{}'::jsonb
+        AND jsonb_typeof("eventBody" -> 'artifactRevisionId') = 'string'
+        AND jsonb_typeof("eventBody" -> 'assetTaskId') = 'string'
+        AND jsonb_typeof("eventBody" -> 'contentDigest') = 'string'
+        AND jsonb_typeof("eventBody" -> 'kind') = 'string'
+        AND jsonb_typeof("eventBody" -> 'origin') = 'string'
+        AND "eventBody" ->> 'contentDigest' =
+          '431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460'
+        AND "eventBody" ->> 'kind' = 'IMAGE'
+        AND "eventBody" ->> 'origin' = 'SYSTEM_LAYOUT'
+      ) IS TRUE ELSE FALSE END
+    ELSE FALSE
+  END
+)
+```
+
+Tests separately prove the old type accepted-row set is a proper subset of the new type set, the old combined-check accepted-row set is a proper subset of the new combined-check set, and every old-domain body result is preserved. They cover SQL NULL, JSON null, every scalar kind, arrays, missing/extra keys, wrong types/values, unknown event types, both new positive witnesses, and all old truth-event null/string combinations.
+
+### Functions, triggers, and immutability
+
+Pre-DDL catalog assertions freeze the existing `public.p2_guard_asset_task_change()` identity arguments (none), trigger return type, PL/pgSQL language, SECURITY INVOKER, VOLATILE volatility, owner, ACL, `proconfig`, OID, and the enabled `AssetTask_guard_change_trigger` binding. The migration uses `CREATE OR REPLACE FUNCTION`; those properties, OID, and trigger binding must be identical afterward. The replacement guard compares statuses as text, permits only the four AssetTask transitions above with the exact column invariants, rejects every no-status-change UPDATE and provenance mutation, and rejects DELETE.
+
+The migration creates these additional trigger functions with `RETURNS TRIGGER`, PL/pgSQL, SECURITY INVOKER, VOLATILE, and no function-level configuration:
+
+```text
+public.p2_guard_generation_attempt_change()
+public.p2_guard_artifact_change()
+public.p2_reject_artifact_revision_change()
+public.p2_reject_generation_attempt_source_link_change()
+public.p2_reject_artifact_revision_source_link_change()
+```
+
+`p2_guard_generation_attempt_change` has separate branches for `RUNNING -> SUCCEEDED`, `RUNNING -> FAILED`, and `RUNNING -> AMBIGUOUS`; a broad `IN (...)` transition is forbidden. It rejects identity, scope, input, lineage, executor, provider, request, usage/cost, and createdAt mutation, no-state UPDATE, cross-set/null/unfrozen errors, and DELETE. `p2_guard_artifact_change` allows only one ACTIVE selected-pointer assignment and one `ACTIVE -> DELETED` transition with both deletion fields, rejects provenance mutation and physical DELETE, and exposes no API for either allowed mutation except the finalize pointer assignment. ArtifactRevision and both link tables reject every UPDATE and DELETE.
+
+Exact triggers are:
+
+```text
+AssetTask_guard_change_trigger BEFORE UPDATE OR DELETE ON AssetTask
+GenerationAttempt_state_machine_trigger BEFORE UPDATE OR DELETE ON GenerationAttempt
+Artifact_guard_change_trigger BEFORE UPDATE OR DELETE ON Artifact
+ArtifactRevision_immutable_trigger BEFORE UPDATE OR DELETE ON ArtifactRevision
+GenerationAttemptSourceLink_immutable_trigger BEFORE UPDATE OR DELETE ON GenerationAttemptSourceLink
+ArtifactRevisionSourceLink_immutable_trigger BEFORE UPDATE OR DELETE ON ArtifactRevisionSourceLink
+```
+
+The existing AssetTask trigger is not dropped or recreated.
+
+### Atomic migration and rollback proof
+
+```text
+FIRST_EXECUTABLE_TRANSACTION_STATEMENT=BEGIN
+LAST_EXECUTABLE_TRANSACTION_STATEMENT=COMMIT
+OUTSIDE_TRANSACTION_DDL_COUNT=0
+OUTSIDE_TRANSACTION_DML_COUNT=0
+```
+
+Before the first DDL statement, the transaction asserts exact predecessor enums, table/column/key/constraint identities, both old CHECK definitions, function catalog properties, and trigger binding. Missing, duplicate, or drifted predecessor objects abort before mutation. The transaction then performs enum additions, supporting keys/columns, the two CHECK replacements, the property-preserving guard replacement, at least the first new S1I DDL object, exactly one sentinel:
+
+```sql
+-- ROLLBACK_PROBE_INJECTION_POINT_P2_S1I_COMPAT_DDL_V1
+```
+
+and then all remaining tables, keys, FKs, checks, functions, triggers, postconditions, and `COMMIT`. No DML is permitted. Tests insert an artificial exception in memory immediately after the sentinel without editing the migration file. After rollback, constraint definitions/validation, enum labels, function OID/owner/ACL/proconfig/identity/behavior, trigger name/table/events/timing/orientation/enabled state/function-OID binding, tables, columns, keys, and indexes equal the pre-run snapshot.
+
+### Claim, execution, object-write, finalize, and commit outcomes
+
+Claim uses an explicit `READ COMMITTED` transaction and verifies `transaction_isolation=read committed`. It performs exactly the scoped row lock:
+
+```sql
+SELECT ... FROM "AssetTask"
+WHERE "workspaceId" = $1 AND "projectId" = $2 AND "assetTaskId" = $3
+FOR UPDATE
+```
+
+After acquiring the lock it re-evaluates task state and deterministic Attempt ID. Only `QUEUED` with no Attempt creates one RUNNING Attempt, one frozen source link, one `generation_attempt.started.v1` event, and changes the task to RUNNING. The executor/storage substitute is constructed only after claim commit is confirmed and the caller is the winner. A loser sees RUNNING and returns 202; completion replay returns 201. Two real database sessions plus a third observer must prove `pg_blocking_pids(session_b_pid)` contains `session_a_pid`, with `pg_stat_activity`/`pg_locks` showing B waiting on A's row/transaction lock. An executor barrier is not row-lock proof. Final totals are one Attempt, one started event, one executor call, and one `putObject` call.
+
+Claim SQLSTATE `40001` or `40P01` maps to `503 DATABASE_TRANSACTION_RETRY_REQUIRED`; lock-timeout `55P03` maps to `503 ASSET_TASK_CLAIM_LOCK_TIMEOUT`. Each rolls back, performs zero executor/storage/compensation calls, and is never automatically retried in the same request.
+
+Object-write outcomes are exhaustive:
+
+1. Confirmed success with exact bytes/metadata proceeds to finalize.
+2. Confirmed failure that guarantees absence, or unknown result followed by authoritative exact-key proof of absence, writes terminal `GenerationAttempt=FAILED` and `AssetTask=FAILED` with `OBJECT_WRITE_FAILED_COMPENSATED`.
+3. Unknown result followed by authoritative proof of the exact valid object proceeds once to finalize; it does not call `putObject` again.
+4. Unknown/unreadable/mismatched object state never deletes the object and writes `GenerationAttempt=AMBIGUOUS`, `AssetTask=HARD_BLOCKED`, and `OBJECT_WRITE_FAILED_COMPENSATION_FAILED` only after that terminal database commit is confirmed. If the terminal commit outcome is unknown, return `DATABASE_COMMIT_OUTCOME_UNKNOWN` and fabricate no terminal state.
+
+Finalize atomically creates Artifact, ArtifactRevision, inherited source link, `artifact_revision.created.v1`, both selected pointers, `GenerationAttempt=SUCCEEDED`, and `AssetTask=SUCCEEDED`. It copies the Attempt's frozen lineage and never queries a newer SourceSnapshot or truth revision. On definite finalize rollback or unknown finalize commit, an authoritative database reread precedes any deletion. Exact-object deletion is allowed only when Task and Attempt remain RUNNING and Artifact, Revision, revision link, and created event are all absent. Confirmed deletion success produces FAILED/FAILED with `FINALIZE_FAILED_COMPENSATED`; failed or unknown deletion produces AMBIGUOUS/HARD_BLOCKED with `FINALIZE_FAILED_COMPENSATION_FAILED`. Inconsistent or unavailable reread means no deletion and `503 DATABASE_COMMIT_OUTCOME_UNKNOWN`.
+
+Any claim/finalize terminal-write commit exception is resolved by authoritative reread of stable Task, Attempt, link, event, Artifact, Revision, and pointer IDs. Coherent RUNNING returns 202 with the original durable request ID; coherent SUCCEEDED returns 201; FAILED/FAILED returns 409; HARD_BLOCKED/AMBIGUOUS returns 503; QUEUED/no coherent graph or inconsistent/unavailable evidence returns `DATABASE_COMMIT_OUTCOME_UNKNOWN`. A commit exception is never assumed to mean rollback.
+
+### HTTP contract
+
+`POST /api/p2/projects/{projectId}/asset-tasks/{assetTaskId}/execute-internal-test` requires the existing authenticated active OWNER session, an empty body, no `Content-Type`, and no client actor/workspace/provider/model/prompt/source/truth/storage/idempotency input. New success and successful replay are 201; RUNNING is 202; both use the durable first-claim request ID and `Location: /api/p2/projects/{projectId}/asset-tasks/{assetTaskId}`. FAILED/FAILED is `409 ASSET_TASK_EXECUTION_FAILED`; HARD_BLOCKED/AMBIGUOUS is `503 ASSET_TASK_EXECUTION_AMBIGUOUS`.
+
+The existing task GET returns 200 with: QUEUED and no Attempt/Revision; RUNNING and Attempt/no Revision; SUCCEEDED and Attempt/Revision; FAILED and failed Attempt/no Revision; or HARD_BLOCKED and ambiguous Attempt/no Revision. Cross-workspace/project/task access does not disclose existence.
+
+`GET /api/p2/projects/{projectId}/asset-tasks/{assetTaskId}/artifacts/{artifactId}/revisions/{artifactRevisionId}/content` validates full scope, selected-pointer equivalence, Attempt binding, active Artifact, CANDIDATE Revision, IMAGE/SYSTEM_LAYOUT representation, MIME, length, dimensions, locator, and SHA-256 before returning bytes. Full success includes `Content-Type: image/png`, `Content-Length: 68`, `Content-Digest: sha-256=:QxztaRaiohoVbjhwGv5Vu9f4iWn7v8Vtf+CZ1H8mVGA=:`, `ETag: "sha256-431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460"`, `Cache-Control: private, no-store`, `X-Content-Type-Options: nosniff`, and current `X-Request-Id`.
+
+Matching `If-None-Match` returns 304 with no body. One syntactically valid satisfiable byte range returns 206, exact `Content-Range`, exact partial `Content-Length`, and the same representation validators. Multiple ranges, malformed ranges, and unsatisfiable ranges return deterministic `416 RANGE_NOT_SATISFIABLE` with `Content-Range: bytes */68` and no image bytes. Any integrity mismatch returns a JSON error and zero image bytes.
+
+### Machine-readable error metadata
+
+Every error uses the stable envelope `{ "error": { "code", "category", "retryable", "userActionRequired", "hardBlock", "message", "requestId", "details" } }` and does not expose SQL, object keys/locators, stack traces, credentials, Provider payloads, or raw exceptions.
+
+| Code | HTTP | Category | Retryable | User action | Hard block |
+| --- | ---: | --- | --- | --- | --- |
+| `AUTH_REQUIRED` | 401 | `AUTHENTICATION` | false | true | true |
+| `FORBIDDEN_SCOPE` | 403 | `AUTHORIZATION` | false | false | true |
+| `VALIDATION_FAILED` | 400 | `INPUT` | false | true | true |
+| `TASK_CONFLICT` | 409 | `TASK_STATE` | false | true | true |
+| `ASSET_TASK_NOT_FOUND` | 404 | `RESOURCE` | false | false | true |
+| `ASSET_TASK_EXECUTION_FAILED` | 409 | `TASK_STATE` | false | true | true |
+| `ASSET_TASK_EXECUTION_AMBIGUOUS` | 503 | `TASK_STATE` | false | true | true |
+| `SERVICE_UNAVAILABLE` | 503 | `INTERNAL` | true | false | false |
+| `DATABASE_TRANSACTION_RETRY_REQUIRED` | 503 | `CONCURRENCY` | true | false | false |
+| `ASSET_TASK_CLAIM_LOCK_TIMEOUT` | 503 | `CONCURRENCY` | true | false | false |
+| `DATABASE_COMMIT_OUTCOME_UNKNOWN` | 503 | `CONCURRENCY` | false | true | true |
+| `ARTIFACT_NOT_FOUND` | 404 | `RESOURCE` | false | false | true |
+| `ARTIFACT_CONTENT_UNAVAILABLE` | 502 | `STORAGE_TRANSIENT` | true | false | false |
+| `ARTIFACT_CONTENT_INTEGRITY_MISMATCH` | 502 | `STORAGE_INTEGRITY` | false | true | true |
+| `NOT_ACCEPTABLE` | 406 | `INPUT` | false | true | true |
+| `RANGE_NOT_SATISFIABLE` | 416 | `INPUT` | false | true | true |
+| `INTERNAL_ERROR` | 500 | `INTERNAL` | true | false | false |
+
+### Binding validity, actor successor, and lifecycle
+
+A candidate is one visible resource request inside the canonical latest program-child binding. It may exist before validation and is not authority. A valid ordinal-3 binding is a candidate for which the immutable PR1 root, contiguous ordinal history, unique grant/nonce/branch, latest canonical Issue-contract digest, API readback digest, exact expected base, ordinal-2 registration merge SHA, exact migration path, exact nine paths, counters/budgets, Draft PR link, current-Head CI, two current-Head independent reviews, and two-read snapshots all match. The complete history distinguishes `candidateCount` from `validCount`; it requires exactly one current valid binding, zero prior valid consumptions, complete pagination, and stable reads. Edited/deleted/stale bodies or comments, a second candidate that becomes valid, or ambiguity is `HOLD`.
+
+There is no legacy Owner-approval template for a program child and no placeholder may be represented as approval. The orchestrator instantiates concrete grant, nonce, base, branch, contract digest, canonical Issue-contract digest, activation/expiry, limits, paths, checks, and resource values only after the exact non-binding Issue bytes and repository contract section are final. It then inserts the one canonical program binding, creates the Issue, and records the separate GitHub API body-readback digest only outside that Issue. Any non-program approval template remains inert documentation until every placeholder is replaced after hashing the exact final body and an unedited human Owner comment exists.
+
+For this program only, the active PR1 delegation plus a valid child binding is the programmatic successor to the legacy additional Owner actor condition. It does not manufacture a human approval. `PROGRAM_CHILD_SAFE_TO_READY` authorizes the Lifecycle Controller's one ordinary Ready transition. After exact owner reconcile, `PROGRAM_CHILD_SAFE_TO_SQUASH_MERGE` authorizes one ordinary squash merge. This successor rule does not affect any non-program task. Exact ordinal-3 merge and successful exact-main-push CI changes AVAILABLE to BOUND to CONSUMED and permanently terminates the delegation. Pre-merge close/expiry changes BOUND to EXPIRED. BOUND never returns to AVAILABLE; CONSUMED/EXPIRED are irreversible; reopening cannot restore them.
+
+### Required verification
+
+Ordinal 3 uses two separate fresh loopback-only PostgreSQL 17 clusters: one fresh all-migrations fixture and one immediate-predecessor upgrade fixture. It records server version, database/user, temp/data roots, PID, port, start/stop times, exit, port release, and directory removal. The upgrade fixture seeds every legal old truth-event null/string combination; snapshots both CHECKs, validation, function OID/owner/ACL/proconfig/attributes, trigger definition/enabled state/OID binding, and predecessor schema; proves injected rollback equality; applies the migration once; proves old data remains legal, both new event witnesses succeed, invalid JSON is safely rejected, strict-superset relations hold, schema/migration/catalog agree, the migration has one successful `_prisma_migrations` record with exact basename/checksum, and a second deploy is a no-op.
+
+The fixed order is:
+
+```text
+npm run db:generate
+npm run db:migrate:check
+npm run test -- tests/unit/p2-internal-attempt-artifact-api.test.ts
+npm run test
+npm run test:integration -- tests/integration/p2-s1i-internal-attempt-artifact-lineage.test.ts
+npm run test:integration
+npm run lint
+npm run typecheck
+npm run build
+git diff --check
+```
+
+Every real exit code is reported. The exact migration, rollback, concurrency, object-state, API, digest, tenant isolation, replay, negative JSONB, catalog, and cleanup evidence is reviewed independently by two distinct current-Head reviewers. Any unverified invariant or cleanup failure is `HOLD`; no claim is inferred from a passing metadata observer alone.
+
+<!-- P2_S1I_COMPLETE_CONTRACT_END -->
