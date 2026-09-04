@@ -31,6 +31,8 @@ const PROGRAM_CONTRACT_SHA256 = 'c195546426c3804adaad2056b9f59a63decdec79ca88a20
 const PROGRAM_SCHEMA = 'autonomous-delivery-program-v1';
 const PROGRAM_CHILD_SCHEMA = 'autonomous-delivery-child-v1';
 const PROGRAM_REVIEW_SCHEMA = 'autonomous-delivery-review-v1';
+const PROGRAM_ROOT_ISSUE_NUMBER = 55;
+const PROGRAM_RESOURCE_NAME = 'P2_S1I_COMPAT_DDL_V1';
 const PROGRAM_ALLOWED_RISKS = new Set(['GREEN', 'YELLOW_BOUNDED']);
 const PROGRAM_PROHIBITED_ACTIONS = new Set([
   'credential_or_permission_change',
@@ -61,6 +63,13 @@ const PROGRAM_MAX_PR_COUNT = 3;
 const PROGRAM_LOCAL_CORRECTION_LIMIT = 3;
 const PROGRAM_PUBLISHED_CORRECTION_LIMIT = 2;
 const PROGRAM_CI_RERUN_LIMIT = 1;
+const PROGRAM_ROOT_PATHS = Object.freeze([
+  '.github/scripts/autonomous-control-gate-v2.mjs',
+  '.github/scripts/autonomous-control-gate-v2.test.mjs',
+  'AGENTS.md',
+  'docs/governance/GITHUB_AUTONOMOUS_DEVELOPMENT_CONTROL_PLANE_V2.md',
+  'docs/governance/V5_P2_ENTRY_GOVERNANCE.md',
+]);
 const PROGRAM_CHILD_2_PATHS = Object.freeze([
   'AGENTS.md',
   'docs/governance/GITHUB_AUTONOMOUS_DEVELOPMENT_CONTROL_PLANE_V2.md',
@@ -116,6 +125,7 @@ const CI_INVALIDATING_PR_EVENTS = new Set([
   'head_ref_restored',
   'reopened',
 ]);
+const PROGRAM_PREMERGE_TERMINATION_EVENTS = new Set(['closed', 'reopened']);
 
 function hold(reasons, details = {}) {
   return {
@@ -357,9 +367,10 @@ function validateProgramRootBinding(binding, issueBody) {
   }
   if (
     !Array.isArray(binding.exactAllowedPaths) ||
-    binding.exactAllowedPaths.length === 0 ||
     binding.exactAllowedPaths.some((path) => !isCanonicalRepositoryPath(path)) ||
-    new Set(binding.exactAllowedPaths).size !== binding.exactAllowedPaths.length
+    new Set(binding.exactAllowedPaths).size !== binding.exactAllowedPaths.length ||
+    JSON.stringify([...binding.exactAllowedPaths].sort()) !==
+      JSON.stringify([...PROGRAM_ROOT_PATHS].sort())
   ) {
     throw new Error('PROGRAM_ROOT_ALLOWLIST_INVALID');
   }
@@ -423,8 +434,7 @@ function validateProgramChildBinding(binding, issueBody) {
     Date.parse(binding.activatedAt) >= Date.parse(binding.expiresAt) ||
     binding.localCorrectionLimit !== PROGRAM_LOCAL_CORRECTION_LIMIT ||
     binding.publishedCorrectionLimit !== PROGRAM_PUBLISHED_CORRECTION_LIMIT ||
-    binding.rootIssueNumber < 1 ||
-    !Number.isInteger(binding.rootIssueNumber) ||
+    binding.rootIssueNumber !== PROGRAM_ROOT_ISSUE_NUMBER ||
     !PROGRAM_ALLOWED_RISKS.has(binding.riskClass) ||
     !['CONTROL_PLANE_CHANGE', 'P2_IMPLEMENTATION'].includes(binding.taskClass) ||
     (binding.childOrdinal === 2 && binding.taskClass !== 'CONTROL_PLANE_CHANGE') ||
@@ -479,8 +489,15 @@ function validateProgramChildBinding(binding, issueBody) {
   }
   binding.resources.forEach(validateProgramResourceRequest);
   if (
-    (binding.childOrdinal === 2 && binding.resources[0]?.action !== 'REGISTER') ||
-    (binding.childOrdinal === 3 && binding.resources[0]?.action !== 'CONSUME')
+    (binding.childOrdinal === 2 && (
+      binding.resources[0]?.action !== 'REGISTER' ||
+      binding.resources[0]?.name !== PROGRAM_RESOURCE_NAME ||
+      binding.resources[0]?.contractSha256 !== binding.contractSha256
+    )) ||
+    (binding.childOrdinal === 3 && (
+      binding.resources[0]?.action !== 'CONSUME' ||
+      binding.resources[0]?.name !== PROGRAM_RESOURCE_NAME
+    ))
   ) {
     throw new Error('PROGRAM_CHILD_RESOURCE_STAGE_INVALID');
   }
@@ -689,7 +706,10 @@ function validateContract(contract) {
 }
 
 function parseTrustedApproval(comment) {
-  if (!comment.createdAt || comment.updatedAt !== comment.createdAt) {
+  if (
+    !comment.createdAt || comment.updatedAt !== comment.createdAt ||
+    !Number.isFinite(Date.parse(comment.createdAt))
+  ) {
     throw new Error('APPROVAL_EDITED_OR_TIME_MISSING');
   }
   const approval = extractMarkedJson(comment.body, APPROVAL_MARKER);
@@ -1207,7 +1227,19 @@ function validateProgramHistory(program, currentBinding) {
   const priorChildren = relevant
     .filter((entry) => entry.binding.childOrdinal > 1 && entry.binding.childOrdinal < currentBinding.childOrdinal)
     .sort((a, b) => a.binding.childOrdinal - b.binding.childOrdinal);
-  if (priorChildren.some((entry) => entry.pr?.merged !== true || entry.mergeParentValid !== true)) {
+  if (priorChildren.some((entry) => (
+    entry.pr?.merged !== true || entry.pr?.state !== 'closed' ||
+    entry.pr?.base?.ref !== POLICY.defaultBranch ||
+    entry.pr?.base?.repoId !== POLICY.repositoryId ||
+    entry.pr?.base?.sha !== entry.binding.authorizedBaseSha ||
+    entry.pr?.head?.repoId !== POLICY.repositoryId ||
+    entry.pr?.head?.ref !== entry.binding.authorizedHeadRef ||
+    !isCommitSha(entry.pr?.head?.sha) ||
+    entry.mergeParentValid !== true || entry.exactConsumptionValid !== true ||
+    entry.activationCi?.status !== 'completed' ||
+    entry.activationCi?.conclusion !== 'success' ||
+    entry.activationCi?.headSha !== entry.pr?.mergeCommitSha
+  ))) {
     throw new Error('PROGRAM_PRIOR_CHILD_NOT_EXACTLY_CONSUMED');
   }
   const expectedPreviousMerge = currentBinding.childOrdinal === 2
@@ -1227,6 +1259,15 @@ function validateProgramTimeline(snapshot) {
   const timeline = snapshot.prTimeline ?? [];
   const ready = timeline.filter((item) => item.event === 'ready_for_review');
   const converted = timeline.filter((item) => item.event === 'convert_to_draft');
+  const issueTimeline = snapshot.issueTimeline ?? [];
+  if (!Array.isArray(issueTimeline)) throw new Error('PROGRAM_ISSUE_TIMELINE_RESPONSE_SHAPE_INVALID');
+  for (const item of [...timeline, ...issueTimeline]) {
+    if (!PROGRAM_PREMERGE_TERMINATION_EVENTS.has(item.event)) continue;
+    if (!Number.isFinite(Date.parse(item.createdAt))) {
+      throw new Error('PROGRAM_TERMINATION_TIMESTAMP_INVALID');
+    }
+    throw new Error(`PROGRAM_PREMERGE_TERMINATION_EXPIRED:${item.event}`);
+  }
   if (converted.length > 0 || ready.length > 1) {
     throw new Error('PROGRAM_PR_LIFECYCLE_HISTORY_INVALID');
   }
@@ -1274,6 +1315,7 @@ export function evaluateProgramChildSnapshot(snapshot) {
       snapshot.pr.head?.repoId !== POLICY.repositoryId ||
       snapshot.pr.base?.sha !== binding.authorizedBaseSha ||
       snapshot.pr.head?.ref !== binding.authorizedHeadRef ||
+      snapshot.pr.mergeable !== true ||
       !isCommitSha(snapshot.pr.head?.sha) ||
       !isOwnerIdentity(snapshot.pr.user)
     ) {
@@ -1297,7 +1339,7 @@ export function evaluateProgramChildSnapshot(snapshot) {
       snapshot.program.root.issue.body,
     );
     if (
-      snapshot.program.root.issue.number !== binding.rootIssueNumber ||
+      snapshot.program.root.issue.number !== PROGRAM_ROOT_ISSUE_NUMBER ||
       snapshot.program.root.issue.user?.id !== POLICY.owner.id ||
       snapshot.program.root.legacyApprovalValid !== true ||
       snapshot.program.root.diffValid !== true ||
@@ -1898,7 +1940,16 @@ async function exactMainPushCi(api, repositoryPath, headSha) {
   ) {
     throw new Error('PROGRAM_ACTIVATION_CI_EVIDENCE_INVALID');
   }
-  return { status: run.status, conclusion: run.conclusion, headSha, id: run.id };
+  if (!Number.isFinite(Date.parse(run.created_at))) {
+    throw new Error('PROGRAM_ACTIVATION_CI_CREATED_AT_INVALID');
+  }
+  return {
+    status: run.status,
+    conclusion: run.conclusion,
+    headSha,
+    id: run.id,
+    createdAt: run.created_at,
+  };
 }
 
 function normalizeHistoricalPull(pr) {
@@ -1907,6 +1958,9 @@ function normalizeHistoricalPull(pr) {
     state: pr.state,
     draft: pr.draft,
     merged: pr.merged === true || Boolean(pr.merged_at),
+    mergeable: pr.mergeable,
+    createdAt: pr.created_at,
+    mergedAt: pr.merged_at,
     mergeCommitSha: pr.merge_commit_sha ?? null,
     body: pr.body ?? '',
     changedFilesCount: pr.changed_files,
@@ -1914,6 +1968,114 @@ function normalizeHistoricalPull(pr) {
     base: { ref: pr.base?.ref, sha: pr.base?.sha, repoId: pr.base?.repo?.id },
     head: { ref: pr.head?.ref, sha: pr.head?.sha, repoId: pr.head?.repo?.id },
   };
+}
+
+function normalizeProgramTimeline(items) {
+  return items
+    .filter((item) => CI_INVALIDATING_PR_EVENTS.has(item.event))
+    .map((item) => ({ event: item.event, createdAt: item.created_at, actor: normalizeUser(item.actor) }))
+    .sort((a, b) => `${a.createdAt}:${a.event}`.localeCompare(`${b.createdAt}:${b.event}`));
+}
+
+export function validateHistoricalProgramLifecycle(pr, prTimeline, issueTimeline) {
+  const mergedAt = Date.parse(pr.mergedAt);
+  if (!Number.isFinite(mergedAt)) throw new Error('PROGRAM_PRIOR_CHILD_MERGED_AT_INVALID');
+  const ready = prTimeline.filter((item) => item.event === 'ready_for_review');
+  const converted = prTimeline.filter((item) => item.event === 'convert_to_draft');
+  if (ready.length !== 1 || !isOwnerIdentity(ready[0].actor) || converted.length !== 0) {
+    throw new Error('PROGRAM_PRIOR_CHILD_READY_HISTORY_INVALID');
+  }
+  for (const item of [...prTimeline, ...issueTimeline]) {
+    if (!PROGRAM_PREMERGE_TERMINATION_EVENTS.has(item.event)) continue;
+    const createdAt = Date.parse(item.createdAt);
+    if (!Number.isFinite(createdAt)) throw new Error('PROGRAM_PRIOR_CHILD_TIMELINE_TIME_INVALID');
+    if (item.event === 'reopened' || createdAt < mergedAt) {
+      throw new Error(`PROGRAM_PRIOR_CHILD_PREMERGE_TERMINATION:${item.event}`);
+    }
+  }
+}
+
+export function validateProgramRootApprovalTiming(rootIssue, rootApproval, rootPr, activationCi) {
+  if (
+    rootIssue.number !== PROGRAM_ROOT_ISSUE_NUMBER ||
+    !isOwnerIdentity(rootIssue.user) || rootIssue.pull_request ||
+    !Number.isFinite(Date.parse(rootApproval.createdAt)) ||
+    !Number.isFinite(Date.parse(rootPr.mergedAt)) ||
+    !Number.isFinite(Date.parse(activationCi.createdAt)) ||
+    Date.parse(rootApproval.createdAt) >= Date.parse(rootPr.mergedAt) ||
+    Date.parse(rootApproval.createdAt) >= Date.parse(activationCi.createdAt)
+  ) {
+    throw new Error('PROGRAM_ROOT_ISSUE_OR_APPROVAL_TIMING_INVALID');
+  }
+}
+
+async function loadHistoricalProgramChildEvidence(
+  api,
+  repositoryPath,
+  issue,
+  binding,
+  historicalPr,
+) {
+  if (
+    issue.state !== 'closed' || !isOwnerIdentity(issue.user) || issue.pull_request ||
+    historicalPr.state !== 'closed' || historicalPr.merged !== true ||
+    !isOwnerIdentity(historicalPr.user) || historicalPr.draft !== false ||
+    historicalPr.base.ref !== POLICY.defaultBranch ||
+    historicalPr.base.repoId !== POLICY.repositoryId ||
+    historicalPr.base.sha !== binding.authorizedBaseSha ||
+    historicalPr.head.repoId !== POLICY.repositoryId ||
+    historicalPr.head.ref !== binding.authorizedHeadRef ||
+    !isCommitSha(historicalPr.head.sha) || !Number.isInteger(historicalPr.changedFilesCount)
+  ) {
+    throw new Error('PROGRAM_PRIOR_CHILD_IDENTITY_INVALID');
+  }
+  const issueNormalized = { number: issue.number, body: issue.body ?? '' };
+  validateProgramLink(
+    extractMarkedJson(historicalPr.body, PROGRAM_LINK_MARKER),
+    binding,
+    issueNormalized,
+    sha256Text(issueNormalized.body),
+    historicalPr,
+  );
+  const [{ data: baseCommit }, { data: headCommit }] = await Promise.all([
+    api.request(`${repositoryPath}/git/commits/${historicalPr.base.sha}`),
+    api.request(`${repositoryPath}/git/commits/${historicalPr.head.sha}`),
+  ]);
+  const [
+    files, { data: baseTree }, { data: headTree }, prCommentsRaw, prTimelineRaw,
+    issueTimelineRaw, ci, activationCi,
+  ] = await Promise.all([
+    api.list(`${repositoryPath}/pulls/${historicalPr.number}/files`),
+    api.request(`${repositoryPath}/git/trees/${baseCommit.tree.sha}?recursive=1`),
+    api.request(`${repositoryPath}/git/trees/${headCommit.tree.sha}?recursive=1`),
+    api.list(`${repositoryPath}/issues/${historicalPr.number}/comments`),
+    api.list(`${repositoryPath}/issues/${historicalPr.number}/timeline`),
+    api.list(`${repositoryPath}/issues/${issue.number}/timeline`),
+    latestCi(api, repositoryPath, historicalPr),
+    exactMainPushCi(api, repositoryPath, historicalPr.mergeCommitSha),
+  ]);
+  const changedFiles = normalizeChangedFiles(
+    files,
+    treeMap(baseCommit, baseTree, historicalPr.base.sha, 'PROGRAM_PRIOR_CHILD_BASE'),
+    treeMap(headCommit, headTree, historicalPr.head.sha, 'PROGRAM_PRIOR_CHILD_HEAD'),
+    historicalPr.changedFilesCount,
+  );
+  const pathResult = validateChangedFiles(changedFiles, {
+    allowedPaths: binding.exactAllowedPaths,
+    taskClass: binding.taskClass,
+  });
+  if (pathResult.lifecycleChange) throw new Error('PROGRAM_PRIOR_CHILD_LIFECYCLE_CHANGE_INVALID');
+  if (validateCi(ci, historicalPr, binding.activatedAt) !== 'success') {
+    throw new Error('PROGRAM_PRIOR_CHILD_CI_NOT_SUCCESS');
+  }
+  const comments = prCommentsRaw.map(normalizeComment).sort((a, b) => a.id - b.id);
+  validateProgramReview(comments, binding, historicalPr);
+  validateHistoricalProgramLifecycle(
+    historicalPr,
+    normalizeProgramTimeline(prTimelineRaw),
+    normalizeProgramTimeline(issueTimelineRaw),
+  );
+  return { activationCi, exactConsumptionValid: true };
 }
 
 async function mergeParentIsExact(api, repositoryPath, pr) {
@@ -1991,7 +2153,7 @@ async function loadProgramContext(api, repositoryPath, currentIssue, normalizedP
   );
   const rootIssueBodySha256 = sha256Text(rootIssue.body ?? '');
   const rootLegacyLink = validateLink(rootPr, rootIssueNormalized, rootContract, rootIssueBodySha256);
-  currentApproval(
+  const rootApproval = currentApproval(
     rootCommentsRaw.map(normalizeComment).sort((a, b) => a.id - b.id),
     rootLegacyLink.approvalCommentId,
     rootContract,
@@ -2002,6 +2164,7 @@ async function loadProgramContext(api, repositoryPath, currentIssue, normalizedP
     exactMainPushCi(api, repositoryPath, rootPr.mergeCommitSha),
     validateProgramRootPull(api, repositoryPath, rootPr, rootBinding),
   ]);
+  validateProgramRootApprovalTiming(rootIssue, rootApproval, rootPr, activationCi);
   const bindingIssues = [];
   for (const issue of allIssues) {
     if (!mentionsMarker(issue.body ?? '', PROGRAM_BINDING_MARKER)) continue;
@@ -2032,12 +2195,23 @@ async function loadProgramContext(api, repositoryPath, currentIssue, normalizedP
       `${repositoryPath}/pulls?state=all&head=${encodeURIComponent(`${POLICY.owner.login}:${entry.binding.authorizedHeadRef}`)}`,
     );
     if (pulls.length !== 1) throw new Error(`PROGRAM_HISTORY_PR_COUNT_${pulls.length}`);
-    const historicalPr = normalizeHistoricalPull(pulls[0]);
+    const { data: historicalPrDetail } = await api.request(
+      `${repositoryPath}/pulls/${pulls[0].number}`,
+    );
+    const historicalPr = normalizeHistoricalPull(historicalPrDetail);
+    const evidence = await loadHistoricalProgramChildEvidence(
+      api,
+      repositoryPath,
+      entry.issue,
+      entry.binding,
+      historicalPr,
+    );
     history.push({
       binding: entry.binding,
       issueNumber: entry.issue.number,
       pr: historicalPr,
       mergeParentValid: await mergeParentIsExact(api, repositoryPath, historicalPr),
+      ...evidence,
     });
   }
   return {
@@ -2079,6 +2253,7 @@ async function loadSnapshotOnce(api, repositoryPath, prNumber, eventName, event,
     state: pr.state,
     draft: pr.draft,
     merged: pr.merged,
+    mergeable: pr.mergeable,
     createdAt: pr.created_at,
     updatedAt: pr.updated_at,
     body: pr.body ?? '',
@@ -2093,11 +2268,12 @@ async function loadSnapshotOnce(api, repositoryPath, prNumber, eventName, event,
     api.request(`${repositoryPath}/git/commits/${normalizedPr.head.sha}`),
   ]);
   const [
-    { data: issue }, issueComments, prComments, prTimelineRaw, changedFilesRaw, relatedRaw,
+    { data: issue }, issueComments, issueTimelineRaw, prComments, prTimelineRaw, changedFilesRaw, relatedRaw,
     { data: baseTree }, { data: headTree }, ci,
   ] = await Promise.all([
     api.request(`${repositoryPath}/issues/${link.issueNumber}`),
     api.list(`${repositoryPath}/issues/${link.issueNumber}/comments`),
+    api.list(`${repositoryPath}/issues/${link.issueNumber}/timeline`),
     api.list(`${repositoryPath}/issues/${prNumber}/comments`),
     api.list(`${repositoryPath}/issues/${prNumber}/timeline`),
     api.list(`${repositoryPath}/pulls/${prNumber}/files`),
@@ -2128,6 +2304,7 @@ async function loadSnapshotOnce(api, repositoryPath, prNumber, eventName, event,
       isPullRequest: Boolean(issue.pull_request),
     },
     issueComments: comments(issueComments),
+    issueTimeline: normalizeProgramTimeline(issueTimelineRaw),
     pr: normalizedPr,
     prTimeline: prTimelineRaw
       .filter((item) => CI_INVALIDATING_PR_EVENTS.has(item.event))
@@ -2178,6 +2355,7 @@ export async function buildSnapshotFromGitHub({
     state: finalPr.state,
     draft: finalPr.draft,
     merged: finalPr.merged,
+    mergeable: finalPr.mergeable,
     createdAt: finalPr.created_at,
     updatedAt: finalPr.updated_at,
     body: finalPr.body ?? '',

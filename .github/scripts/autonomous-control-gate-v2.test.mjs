@@ -16,6 +16,8 @@ import {
   normalizeEvent,
   resolvePrNumber,
   sha256Text,
+  validateHistoricalProgramLifecycle,
+  validateProgramRootApprovalTiming,
 } from './autonomous-control-gate-v2.mjs';
 
 const BASE_SHA = 'f6a55979dd37aba84e66d19c947b6be572c9973c';
@@ -201,6 +203,7 @@ const PROGRAM_CONTRACT_SHA = 'c195546426c3804adaad2056b9f59a63decdec79ca88a20e7e
 const PROGRAM_ROOT_MERGE_SHA = '2'.repeat(40);
 const PROGRAM_HEAD_SHA = '3'.repeat(40);
 const PROGRAM_CHILD_2_MERGE_SHA = '5'.repeat(40);
+const PROGRAM_RESOURCE_NAME = 'P2_S1I_COMPAT_DDL_V1';
 
 function programChild3Paths() {
   return [
@@ -233,7 +236,13 @@ function rootProgramBinding() {
     childOrdinal: 1,
     contractSha256: PROGRAM_CONTRACT_SHA,
     delegationActivationSha: 'PENDING_PR1_MERGE_AND_EXACT_MAIN_CI_SUCCESS',
-    exactAllowedPaths: ['docs/governance/GITHUB_AUTONOMOUS_DEVELOPMENT_CONTROL_PLANE_V2.md'],
+    exactAllowedPaths: [
+      '.github/scripts/autonomous-control-gate-v2.mjs',
+      '.github/scripts/autonomous-control-gate-v2.test.mjs',
+      'AGENTS.md',
+      'docs/governance/GITHUB_AUTONOMOUS_DEVELOPMENT_CONTROL_PLANE_V2.md',
+      'docs/governance/V5_P2_ENTRY_GOVERNANCE.md',
+    ],
     expectedBaseSha: BASE_SHA,
     expiresAt: '2026-10-04T00:00:00Z',
     grantId: `grant-${'1'.repeat(32)}`,
@@ -326,8 +335,8 @@ function makeProgramSnapshot({
   childOverrides = {},
   resources = [{
     action: 'REGISTER',
-    contractSha256: 'b'.repeat(64),
-    name: 'PROGRAM_TEST_RESOURCE',
+    contractSha256: 'a'.repeat(64),
+    name: PROGRAM_RESOURCE_NAME,
   }],
 } = {}) {
   const snapshot = makeSnapshot({
@@ -352,6 +361,7 @@ function makeProgramSnapshot({
     state: 'open',
     draft: true,
     merged: false,
+    mergeable: true,
     createdAt: '2026-09-05T00:00:00Z',
     body: '',
     user: owner(),
@@ -381,6 +391,7 @@ function makeProgramSnapshot({
   };
   snapshot.pr.body = marker('PROGRAM_CHILD_LINK_JSON', link);
   snapshot.issueComments = [];
+  snapshot.issueTimeline = [];
   snapshot.relatedPullRequests = [{ number: snapshot.pr.number }];
   snapshot.prTimeline = [];
   snapshot.prComments = [{
@@ -453,7 +464,7 @@ function updateProgramLink(snapshot, mutate) {
 }
 
 function makeProgramOrdinal3Snapshot() {
-  const resourceName = 'PROGRAM_TEST_RESOURCE';
+  const resourceName = PROGRAM_RESOURCE_NAME;
   const snapshot = makeProgramSnapshot({
     childOverrides: {
       authorizedBaseSha: PROGRAM_CHILD_2_MERGE_SHA,
@@ -475,19 +486,26 @@ function makeProgramOrdinal3Snapshot() {
   snapshot.pr.base.sha = PROGRAM_CHILD_2_MERGE_SHA;
   snapshot.program.mainSha = PROGRAM_CHILD_2_MERGE_SHA;
   const registrationBinding = childProgramBinding({
-    resources: [{ action: 'REGISTER', contractSha256: 'b'.repeat(64), name: resourceName }],
+    resources: [{ action: 'REGISTER', contractSha256: 'a'.repeat(64), name: resourceName }],
   });
   snapshot.program.bindings.splice(1, 0, {
     binding: registrationBinding,
     issueNumber: 56,
     pr: {
       number: 57,
+      state: 'closed',
       merged: true,
       mergeCommitSha: PROGRAM_CHILD_2_MERGE_SHA,
       base: { ref: 'main', sha: PROGRAM_ROOT_MERGE_SHA, repoId: POLICY.repositoryId },
       head: { ref: registrationBinding.authorizedHeadRef, sha: '6'.repeat(40), repoId: POLICY.repositoryId },
     },
     mergeParentValid: true,
+    exactConsumptionValid: true,
+    activationCi: {
+      status: 'completed',
+      conclusion: 'success',
+      headSha: PROGRAM_CHILD_2_MERGE_SHA,
+    },
   });
   snapshot.issue.number = 58;
   snapshot.pr.number = 59;
@@ -580,6 +598,108 @@ test('ordinal 3 requires two distinct exact-Head reviewers and the frozen nine p
   assert.match(holdReason(widened), /PROGRAM_CHILD_2_ALLOWLIST_NOT_FROZEN/u);
 });
 
+test('program root is frozen to Issue 55 and the exact PR1 five-path allowlist', () => {
+  const wrongIssue = makeProgramSnapshot();
+  wrongIssue.program.binding.rootIssueNumber = 999;
+  assert.match(holdReason(wrongIssue), /PROGRAM_CHILD_BINDING_SHAPE_INVALID/u);
+
+  const wrongPaths = makeProgramSnapshot();
+  const root = bodyWithProgramBinding({
+    ...wrongPaths.program.root.binding,
+    exactAllowedPaths: ['docs/governance/GITHUB_AUTONOMOUS_DEVELOPMENT_CONTROL_PLANE_V2.md'],
+  }, '# Program root contract\n');
+  wrongPaths.program.root.binding = root.binding;
+  wrongPaths.program.root.issue.body = root.body;
+  assert.match(holdReason(wrongPaths), /PROGRAM_ROOT_ALLOWLIST_INVALID/u);
+});
+
+test('program freezes the S1I resource name and registration contract binding', () => {
+  const wrongName = makeProgramSnapshot();
+  wrongName.program.binding.resources[0].name = 'PROGRAM_TEST_RESOURCE';
+  assert.match(holdReason(wrongName), /PROGRAM_CHILD_RESOURCE_STAGE_INVALID/u);
+
+  const wrongContract = makeProgramSnapshot();
+  wrongContract.program.binding.resources[0].contractSha256 = 'b'.repeat(64);
+  assert.match(holdReason(wrongContract), /PROGRAM_CHILD_RESOURCE_STAGE_INVALID/u);
+});
+
+test('program merge gate requires stable mergeable=true', () => {
+  for (const mergeable of [false, null]) {
+    const snapshot = makeProgramSnapshot();
+    snapshot.pr.mergeable = mergeable;
+    assert.match(holdReason(snapshot), /PROGRAM_PR_IDENTITY_OR_STATE_INVALID/u);
+  }
+});
+
+test('program permanently expires a child after pre-merge PR or Issue termination', () => {
+  const prReopened = makeProgramSnapshot();
+  prReopened.prTimeline = [
+    { event: 'closed', createdAt: '2026-09-05T00:00:30Z', actor: owner() },
+    { event: 'reopened', createdAt: '2026-09-05T00:00:31Z', actor: owner() },
+  ];
+  assert.match(holdReason(prReopened), /PROGRAM_PREMERGE_TERMINATION_EXPIRED:closed/u);
+
+  const issueReopened = makeProgramSnapshot();
+  issueReopened.issueTimeline = [
+    { event: 'closed', createdAt: '2026-09-05T00:00:30Z', actor: owner() },
+    { event: 'reopened', createdAt: '2026-09-05T00:00:31Z', actor: owner() },
+  ];
+  assert.match(holdReason(issueReopened), /PROGRAM_PREMERGE_TERMINATION_EXPIRED:closed/u);
+});
+
+test('ordinal 3 revalidates exact historical child consumption and main-push CI', () => {
+  const wrongBase = makeProgramOrdinal3Snapshot();
+  wrongBase.program.bindings[1].pr.base.sha = '8'.repeat(40);
+  assert.match(holdReason(wrongBase), /PROGRAM_PRIOR_CHILD_NOT_EXACTLY_CONSUMED/u);
+
+  const invalidEvidence = makeProgramOrdinal3Snapshot();
+  invalidEvidence.program.bindings[1].exactConsumptionValid = false;
+  assert.match(holdReason(invalidEvidence), /PROGRAM_PRIOR_CHILD_NOT_EXACTLY_CONSUMED/u);
+
+  const wrongActivation = makeProgramOrdinal3Snapshot();
+  wrongActivation.program.bindings[1].activationCi.headSha = '9'.repeat(40);
+  assert.match(holdReason(wrongActivation), /PROGRAM_PRIOR_CHILD_NOT_EXACTLY_CONSUMED/u);
+});
+
+test('historical lifecycle permits merge-caused close but rejects pre-merge termination', () => {
+  const historicalPr = { mergedAt: '2026-09-05T00:05:00Z' };
+  const ready = { event: 'ready_for_review', createdAt: '2026-09-05T00:03:00Z', actor: owner() };
+  assert.doesNotThrow(() => validateHistoricalProgramLifecycle(
+    historicalPr,
+    [ready, { event: 'closed', createdAt: '2026-09-05T00:05:00Z', actor: owner() }],
+    [{ event: 'closed', createdAt: '2026-09-05T00:05:00Z', actor: owner() }],
+  ));
+  assert.throws(
+    () => validateHistoricalProgramLifecycle(
+      historicalPr,
+      [ready, { event: 'closed', createdAt: '2026-09-05T00:04:59Z', actor: owner() }],
+      [],
+    ),
+    /PROGRAM_PRIOR_CHILD_PREMERGE_TERMINATION:closed/u,
+  );
+});
+
+test('root approval must be immutable evidence created before merge and activation CI', () => {
+  const rootIssue = { number: 55, user: owner(), pull_request: null };
+  const rootPr = { mergedAt: '2026-09-05T00:05:00Z' };
+  const activationCi = { createdAt: '2026-09-05T00:06:00Z' };
+  assert.doesNotThrow(() => validateProgramRootApprovalTiming(
+    rootIssue,
+    { createdAt: '2026-09-05T00:04:00Z' },
+    rootPr,
+    activationCi,
+  ));
+  assert.throws(
+    () => validateProgramRootApprovalTiming(
+      rootIssue,
+      { createdAt: '2026-09-05T00:05:01Z' },
+      rootPr,
+      activationCi,
+    ),
+    /PROGRAM_ROOT_ISSUE_OR_APPROVAL_TIMING_INVALID/u,
+  );
+});
+
 test('program delegation fails closed before exact bootstrap activation and exact main-push CI', () => {
   for (const mutate of [
     (snapshot) => { snapshot.program.root.pr.merged = false; },
@@ -647,7 +767,7 @@ test('program child rejects grant, nonce, ordinal, and previous-base replay', ()
     },
     resources: [{
       action: 'CONSUME',
-      name: 'PROGRAM_TEST_RESOURCE',
+      name: PROGRAM_RESOURCE_NAME,
       registrationMergeSha: '6'.repeat(40),
     }],
   });
