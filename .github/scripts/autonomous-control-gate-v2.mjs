@@ -1246,7 +1246,93 @@ function validatePrTimeline(prTimeline, ci) {
   }
 }
 
-function validateProgramHistory(program, currentBinding) {
+export const S1I_REPAIR = Object.freeze({
+  oldBaseSha: '29ba2f1badac6023c42f1ca8e1d7aad67eedc5b1',
+  originalHeadSha: '0ce3bb8b3b1eb04b84a9d14bdd5ad9c58929bbb6',
+  repairIssueNumber: 59,
+  repairBranch: 'codex/s1i-squash-capability-repair-v1-29ba2f1b',
+  issueNumber: 57, prNumber: 58,
+  childBranch: 'codex/p2-s1i-compat-governance-v1-29ba2f1b',
+  grantId: 'grant-c29ef397d264d317df0f353d671f8022',
+  nonce: '040f6b0ffdd40262659c4d146ca467d4',
+  issueContractSha256: '60aaf0191e5f8e5f5c35b353062beb5ffe692a1bafcf2a6c9808fe2b7472c68c',
+  migrationId: 'AI_VISION_V5_S1I_CONTROL_PLANE_SQUASH_CAPABILITY_REPAIR_V1',
+});
+const S1I_MIGRATION_MARKER = 'S1I_BASELINE_MIGRATION_JSON';
+const S1I_REPAIR_PATHS = [
+  '.github/scripts/autonomous-control-gate-v2.mjs',
+  '.github/scripts/autonomous-control-gate-v2.test.mjs',
+  '.github/workflows/ci.yml', 'AGENTS.md',
+  'docs/governance/GITHUB_AUTONOMOUS_DEVELOPMENT_CONTROL_PLANE_V2.md',
+];
+
+export function validateS1iMigration(evidence, child) {
+  const { record, comment, repair, mergeCommit, headCommit, ci, activationCi } = evidence ?? {};
+  if (!record) throw new Error('S1I_MIGRATION_MISSING');
+  exactKeys(record, ['schema', 'migrationId', 'programId', 'issueNumber', 'prNumber',
+    'oldBaseSha', 'newBaseSha', 'repairIssueNumber', 'repairPrNumber', 'repairMergeSha',
+    'grantId', 'nonce', 'issueBodySha256', 'consumptionState'], 'S1I_MIGRATION');
+  if (
+    record.schema !== 's1i-baseline-migration-v1' || record.migrationId !== S1I_REPAIR.migrationId ||
+    record.programId !== PROGRAM_ID || record.issueNumber !== S1I_REPAIR.issueNumber ||
+    record.prNumber !== S1I_REPAIR.prNumber || record.oldBaseSha !== S1I_REPAIR.oldBaseSha ||
+    record.repairIssueNumber !== S1I_REPAIR.repairIssueNumber ||
+    record.grantId !== S1I_REPAIR.grantId || record.nonce !== S1I_REPAIR.nonce ||
+    record.consumptionState !== 'CONSUMED' || !isCommitSha(record.newBaseSha) ||
+    record.newBaseSha === record.oldBaseSha || record.newBaseSha !== record.repairMergeSha ||
+    child?.issueNumber !== record.issueNumber || child.pr?.number !== record.prNumber ||
+    child.binding?.childOrdinal !== 2 || child.binding.programId !== PROGRAM_ID ||
+    child.binding.authorizedHeadRef !== S1I_REPAIR.childBranch ||
+    child.binding.grantId !== record.grantId || child.binding.nonce !== record.nonce ||
+    child.binding.issueContractSha256 !== S1I_REPAIR.issueContractSha256 ||
+    child.binding.delegationActivationSha !== record.oldBaseSha ||
+    child.binding.authorizedBaseSha !== record.newBaseSha ||
+    child.binding.expectedBaseSha !== record.newBaseSha ||
+    child.binding.previousMergeSha !== record.newBaseSha ||
+    record.issueBodySha256 !== evidence.issueBodySha256 ||
+    !isSha256(evidence.issueBodySha256) ||
+    !isOwner(comment?.user, comment?.authorAssociation) ||
+    !Number.isInteger(comment?.id) || comment.id < 1 ||
+    !isIsoInstant(comment.createdAt) || comment.createdAt !== comment.updatedAt ||
+    !repair || repair.number !== record.repairPrNumber || !Number.isInteger(repair.number) ||
+    repair.merged !== true || repair.state !== 'closed' || !isOwnerIdentity(repair.user) ||
+    repair.base?.sha !== record.oldBaseSha || repair.base.ref !== POLICY.defaultBranch ||
+    repair.base.repoId !== POLICY.repositoryId || repair.head?.repoId !== POLICY.repositoryId ||
+    repair.head.ref !== S1I_REPAIR.repairBranch || repair.mergeCommitSha !== record.newBaseSha ||
+    mergeCommit?.sha !== record.newBaseSha || mergeCommit.parents?.length !== 1 ||
+    mergeCommit.parents[0]?.sha !== record.oldBaseSha ||
+    headCommit?.sha !== repair.head.sha || !isCommitSha(headCommit?.tree?.sha) ||
+    mergeCommit.tree?.sha !== headCommit.tree.sha ||
+    evidence.repairIdentityAndScopeValid !== true || evidence.businessDeltaValid !== true ||
+    !isSha256(evidence.businessEvidenceDigest) ||
+    Date.parse(comment.createdAt) <= Date.parse(activationCi?.createdAt) ||
+    Date.parse(comment.createdAt) <= Date.parse(repair.mergedAt)
+  ) throw new Error('S1I_MIGRATION_BINDING_OR_HISTORY_INVALID');
+  validateProgramActivationCiEvidence(activationCi, record.newBaseSha);
+  const prCompletedAt = ci?.jobs?.[0]?.completedAt;
+  const activationCompletedAt = activationCi?.jobs?.[0]?.completedAt;
+  if (!isIsoInstant(evidence.approvalCreatedAt) || !isIsoInstant(repair.mergedAt) ||
+      !isIsoInstant(prCompletedAt) || !isIsoInstant(activationCompletedAt) ||
+      Date.parse(evidence.approvalCreatedAt) >= Date.parse(repair.mergedAt) ||
+      Date.parse(ci.createdAt) >= Date.parse(repair.mergedAt) ||
+      Date.parse(prCompletedAt) <= Date.parse(ci.createdAt) ||
+      Date.parse(prCompletedAt) >= Date.parse(repair.mergedAt) ||
+      Date.parse(activationCi.createdAt) < Date.parse(repair.mergedAt) ||
+      Date.parse(activationCompletedAt) <= Date.parse(activationCi.createdAt) ||
+      Date.parse(activationCompletedAt) >= Date.parse(comment.createdAt)) {
+    throw new Error('S1I_MIGRATION_CI_TIMING_INVALID');
+  }
+  if (!Array.isArray(evidence.prTimeline) || !Array.isArray(evidence.issueTimeline)) {
+    throw new Error('S1I_REPAIR_TIMELINE_MISSING');
+  }
+  validateHistoricalProgramLifecycle(repair, evidence.prTimeline, evidence.issueTimeline);
+  if (validateCi(ci, repair, evidence.approvalCreatedAt) !== 'success') {
+    throw new Error('S1I_REPAIR_CI_NOT_SUCCESS');
+  }
+  return record.newBaseSha;
+}
+
+export function validateProgramHistory(program, currentBinding) {
   if (!Array.isArray(program.bindings)) throw new Error('PROGRAM_HISTORY_MISSING');
   const relevant = program.bindings.filter((entry) => entry.binding?.programId === PROGRAM_ID);
   const grantIds = new Set();
@@ -1289,8 +1375,15 @@ function validateProgramHistory(program, currentBinding) {
       throw new Error('PROGRAM_PRIOR_CHILD_NOT_EXACTLY_CONSUMED');
     }
   }
+  const child2 = relevant.find((entry) => entry.binding.childOrdinal === 2);
+  let child2Previous = program.root.pr.mergeCommitSha;
+  if (program.migration || (child2Previous === S1I_REPAIR.oldBaseSha &&
+      child2?.binding.authorizedBaseSha !== child2Previous)) {
+    if (child2Previous !== S1I_REPAIR.oldBaseSha) throw new Error('S1I_MIGRATION_ROOT_INVALID');
+    child2Previous = validateS1iMigration(program.migration, child2);
+  }
   const expectedPreviousMerge = currentBinding.childOrdinal === 2
-    ? program.root.pr.mergeCommitSha
+    ? child2Previous
     : priorChildren.at(-1)?.pr?.mergeCommitSha;
   if (
     !isCommitSha(expectedPreviousMerge) ||
@@ -1843,6 +1936,7 @@ export async function latestCi(api, repositoryPath, pr) {
       headSha: job.head_sha,
       runId: job.run_id,
       runAttempt: job.run_attempt,
+      ...(job.completed_at ? { completedAt: job.completed_at } : {}),
     })).sort((a, b) => a.id - b.id),
   };
 }
@@ -1925,20 +2019,24 @@ function normalizeComment(comment) {
   };
 }
 
-async function repositoryAutoMerge(api) {
+export async function repositoryMergeCapabilities(api) {
   const [owner, name] = POLICY.repositoryFullName.split('/');
   const data = await api.graphql(
-    'query RepositoryAutoMerge($owner:String!,$name:String!){repository(owner:$owner,name:$name){databaseId nameWithOwner autoMergeAllowed}}',
+    'query RepositoryMergeCapabilities($owner:String!,$name:String!){repository(owner:$owner,name:$name){databaseId nameWithOwner autoMergeAllowed squashMergeAllowed}}',
     { owner, name },
   );
   if (
     data.repository?.databaseId !== POLICY.repositoryId ||
     data.repository?.nameWithOwner !== POLICY.repositoryFullName ||
-    typeof data.repository?.autoMergeAllowed !== 'boolean'
+    typeof data.repository?.autoMergeAllowed !== 'boolean' ||
+    typeof data.repository?.squashMergeAllowed !== 'boolean'
   ) {
-    throw new Error('AUTO_MERGE_GRAPHQL_SHAPE_INVALID');
+    throw new Error('MERGE_CAPABILITIES_GRAPHQL_SHAPE_INVALID');
   }
-  return data.repository.autoMergeAllowed;
+  return {
+    allowAutoMerge: data.repository.autoMergeAllowed,
+    allowSquashMerge: data.repository.squashMergeAllowed,
+  };
 }
 
 export async function exactMainPushCi(api, repositoryPath, headSha) {
@@ -2036,6 +2134,7 @@ export async function exactMainPushCi(api, repositoryPath, headSha) {
       headSha: job.head_sha,
       runId: job.run_id,
       runAttempt: job.run_attempt,
+      ...(job.completed_at ? { completedAt: job.completed_at } : {}),
     })).sort((a, b) => a.id - b.id),
   };
   return validateProgramActivationCiEvidence(evidence, headSha);
@@ -2251,6 +2350,84 @@ async function validateProgramRootPull(api, repositoryPath, rootPr, rootBinding)
   return true;
 }
 
+export async function loadS1iMigration(api, repositoryPath, child, issue) {
+  const comments = (await api.list(`${repositoryPath}/issues/${S1I_REPAIR.issueNumber}/comments`))
+    .map(normalizeComment).filter((comment) =>
+      isOwnerIdentity(comment.user) && mentionsMarker(comment.body, S1I_MIGRATION_MARKER));
+  if (comments.length === 0 && child.binding.authorizedBaseSha === S1I_REPAIR.oldBaseSha) return null;
+  if (comments.length !== 1) throw new Error('S1I_MIGRATION_RECORD_COUNT_INVALID');
+  const comment = comments[0];
+  const record = extractMarkedJson(comment.body, S1I_MIGRATION_MARKER);
+  const pulls = await api.list(`${repositoryPath}/pulls?state=all&head=${encodeURIComponent(
+    `${POLICY.owner.login}:${S1I_REPAIR.repairBranch}`)}`);
+  if (pulls.length !== 1 || pulls[0].number !== record.repairPrNumber) {
+    throw new Error('S1I_REPAIR_PR_NOT_UNIQUE');
+  }
+  const [{ data: rawRepair }, { data: repairIssue }, repairComments, issueComments,
+    prTimelineRaw, issueTimelineRaw] = await Promise.all([
+    api.request(`${repositoryPath}/pulls/${record.repairPrNumber}`),
+    api.request(`${repositoryPath}/issues/${S1I_REPAIR.repairIssueNumber}`),
+    api.list(`${repositoryPath}/issues/${record.repairPrNumber}/comments`),
+    api.list(`${repositoryPath}/issues/${S1I_REPAIR.repairIssueNumber}/comments`),
+    api.list(`${repositoryPath}/issues/${record.repairPrNumber}/timeline`),
+    api.list(`${repositoryPath}/issues/${S1I_REPAIR.repairIssueNumber}/timeline`),
+  ]);
+  const repair = normalizeHistoricalPull(rawRepair);
+  if (!isOwnerIdentity(repairIssue.user) || repairIssue.pull_request ||
+      repairIssue.number !== S1I_REPAIR.repairIssueNumber || !repair.merged) {
+    throw new Error('S1I_REPAIR_ISSUE_INVALID');
+  }
+  const contract = validateContract(extractMarkedJson(repairIssue.body, CONTRACT_MARKER));
+  if (contract.taskClass !== 'CONTROL_PLANE_CHANGE' ||
+      contract.authorizedBaseSha !== S1I_REPAIR.oldBaseSha) throw new Error('S1I_REPAIR_CONTRACT_INVALID');
+  exactStringSet(contract.allowedPaths, S1I_REPAIR_PATHS, 'S1I_REPAIR_PATHS');
+  const digest = sha256Text(repairIssue.body);
+  const link = validateLink(repair, repairIssue, contract, digest);
+  const approval = currentApproval(issueComments.map(normalizeComment), link.approvalCommentId, contract, digest);
+  const [{ data: mergeCommit }, { data: headCommit }, ci, activationCi, scopeValid] = await Promise.all([
+    api.request(`${repositoryPath}/git/commits/${repair.mergeCommitSha}`),
+    api.request(`${repositoryPath}/git/commits/${repair.head.sha}`),
+    latestCi(api, repositoryPath, repair),
+    exactMainPushCi(api, repositoryPath, repair.mergeCommitSha),
+    validateProgramRootPull(api, repositoryPath, repair, {
+      authorizedBaseSha: S1I_REPAIR.oldBaseSha, authorizedHeadRef: S1I_REPAIR.repairBranch,
+      exactAllowedPaths: S1I_REPAIR_PATHS,
+    }),
+  ]);
+  const reviews = validateProgramReview(repairComments.map(normalizeComment), {
+    programId: PROGRAM_ID, childOrdinal: 2, orchestratorSessionId: 'orchestrator-s1i-repair-builder-v1',
+  }, repair);
+  validateHistoricalProgramReviews(reviews, repair);
+  // This repair may only append governance. Preserve the original PR58 bytes,
+  // followed by exactly that appendage; its three-path business delta cannot drift.
+  const business = [];
+  for (const path of PROGRAM_CHILD_2_PATHS) {
+    const read = async (ref) => {
+      const { data } = await api.request(`${repositoryPath}/contents/${path}?ref=${ref}`);
+      if (data.type !== 'file' || data.encoding !== 'base64' || typeof data.content !== 'string') {
+        throw new Error('S1I_BUSINESS_CONTENT_INVALID');
+      }
+      return Buffer.from(data.content, 'base64').toString('utf8');
+    };
+    const [oldBase, oldHead, newBase, newHead] = await Promise.all([
+      read(S1I_REPAIR.oldBaseSha), read(S1I_REPAIR.originalHeadSha),
+      read(repair.mergeCommitSha), read(child.pr.head.sha),
+    ]);
+    if (!newBase.startsWith(oldBase) || newHead !== oldHead + newBase.slice(oldBase.length)) {
+      throw new Error(`S1I_BUSINESS_DELTA_CHANGED:${path}`);
+    }
+    business.push({ path, oldBase: sha256Text(oldBase), oldHead: sha256Text(oldHead),
+      newBase: sha256Text(newBase), newHead: sha256Text(newHead) });
+  }
+  const evidence = { record, comment, repair, mergeCommit, headCommit, ci, activationCi,
+    prTimeline: normalizeProgramTimeline(prTimelineRaw), issueTimeline: normalizeProgramTimeline(issueTimelineRaw),
+    approvalCreatedAt: approval.createdAt, approval, reviews, repairIssueBodySha256: digest,
+    issueBodySha256: sha256Text(issue.body), repairIdentityAndScopeValid: scopeValid,
+    businessDeltaValid: true, businessEvidenceDigest: sha256Text(JSON.stringify(business)), business };
+  validateS1iMigration(evidence, child);
+  return evidence;
+}
+
 async function loadProgramContext(api, repositoryPath, currentIssue, normalizedPr, programLink, observedAt) {
   const binding = validateProgramChildBinding(
     extractMarkedJson(currentIssue.body ?? '', PROGRAM_BINDING_MARKER),
@@ -2345,7 +2522,12 @@ async function loadProgramContext(api, repositoryPath, currentIssue, normalizedP
       ...evidence,
     });
   }
+  const child2 = history.find((entry) => entry.binding.childOrdinal === 2);
+  const child2Issue = bindingIssues.find((entry) => entry.binding.childOrdinal === 2)?.issue;
+  const migration = child2 && rootPr.mergeCommitSha === S1I_REPAIR.oldBaseSha
+    ? await loadS1iMigration(api, repositoryPath, child2, child2Issue) : null;
   return {
+    migration,
     binding,
     link: programLink,
     now: observedAt,
@@ -2369,10 +2551,10 @@ async function loadProgramContext(api, repositoryPath, currentIssue, normalizedP
 }
 
 async function loadSnapshotOnce(api, repositoryPath, prNumber, eventName, event, observedAt) {
-  const [{ data: repo }, { data: pr }, allowAutoMerge] = await Promise.all([
+  const [{ data: repo }, { data: pr }, capabilities] = await Promise.all([
     api.request(repositoryPath),
     api.request(`${repositoryPath}/pulls/${prNumber}`),
-    repositoryAutoMerge(api),
+    repositoryMergeCapabilities(api),
   ]);
   const programLink = extractOptionalMarkedJson(pr.body ?? '', PROGRAM_LINK_MARKER);
   const link = programLink ?? extractMarkedJson(pr.body ?? '', LINK_MARKER);
@@ -2422,8 +2604,7 @@ async function loadSnapshotOnce(api, repositoryPath, prNumber, eventName, event,
       fullName: repo.full_name,
       defaultBranch: repo.default_branch,
       owner: normalizeUser(repo.owner),
-      allowAutoMerge,
-      allowSquashMerge: repo.allow_squash_merge,
+      ...capabilities,
     },
     event: normalizeEvent(eventName, event),
     issue: {
@@ -2542,6 +2723,28 @@ export function formatResultLines(result) {
 }
 
 async function main() {
+  if (process.argv[2] === 'capability-probe') {
+    if (process.env.GITHUB_REPOSITORY !== POLICY.repositoryFullName) {
+      throw new Error('CAPABILITY_PROBE_REPOSITORY_MISMATCH');
+    }
+    const api = createApi(process.env.GITHUB_TOKEN, 'https://api.github.com');
+    const read = async () => {
+      const { data: repo } = await api.request(`/repos/${POLICY.repositoryFullName}`);
+      const capabilities = await repositoryMergeCapabilities(api);
+      const repository = {
+        id: repo.id, fullName: repo.full_name, defaultBranch: repo.default_branch,
+        owner: normalizeUser(repo.owner), ...capabilities,
+      };
+      validateRepository(repository);
+      return { repository, restSquashPresent: Object.hasOwn(repo, 'allow_squash_merge'),
+        restSquashValue: repo.allow_squash_merge ?? null };
+    };
+    const first = await read();
+    assertStableSnapshots(first, await read());
+    if (first.repository.allowSquashMerge !== true) throw new Error('PROGRAM_SQUASH_MERGE_NOT_AVAILABLE');
+    console.log(JSON.stringify({ capabilityProbe: first, result: 'PASS' }));
+    return;
+  }
   if (process.argv[2] !== 'observe') {
     throw new Error('USAGE: node autonomous-control-gate-v2.mjs observe');
   }

@@ -64,6 +64,11 @@ jobs:
           node --check .github/scripts/autonomous-control-gate-v2.test.mjs
           node --test .github/scripts/autonomous-control-gate-v2.test.mjs
 
+      - name: Verify repository merge capability with read-only Actions identity
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/scripts/autonomous-control-gate-v2.mjs capability-probe
+
       - name: Install dependencies
         run: npm ci
 
