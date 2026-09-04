@@ -195,3 +195,25 @@ Any `HOLD` reports `P2_STATUS=LOCKED`. No machine result marks the PR Ready or a
 ## This governance task
 
 This document and its companion control-plane changes establish bounded-convergence entry rules only. They do not modify application code, Prisma schema, migrations, package lifecycle files, provider configuration, or production data and do not start S1E. No machine result authorizes this governance PR's lifecycle transition. After an exact human semantic review, explicitly authorized ordinary merge, and successful `Quality gates` for the resulting exact `main` push, the rules are active; Issue #39 still requires its own current-base rebinding and owner approval before authentication implementation resumes.
+
+## P2 S1I autonomous-program entry
+
+`AI_VISION_V5_S1I_AUTONOMOUS_DELIVERY_V1` is the sole program allowed to use the program overlay in the V2 control plane. PR1 only installs the generic mechanism; it neither registers nor consumes an S1I DDL exception and does not authorize a database operation.
+
+After PR1's exact merge and exact-main-push CI activate the delegation, child ordinal 2 may modify exactly `AGENTS.md`, `docs/governance/GITHUB_AUTONOMOUS_DEVELOPMENT_CONTROL_PLANE_V2.md`, and this file. It must freeze the complete S1I physical contract and declaratively `REGISTER` the named single-use resource `P2_S1I_COMPAT_DDL_V1`. Ordinal 2 may not modify Prisma, migrations, application/test code, lifecycle files, dependencies, locks, workflows, or data. Its successful exact merge changes the resource only from `PROPOSED_INACTIVE` to `AVAILABLE`.
+
+Only child ordinal 3 may bind and consume that resource. Its changed-file set must equal these nine paths, with a newly generated 14-digit migration timestamp:
+
+1. `app/api/p2/projects/[projectId]/asset-tasks/[assetTaskId]/artifacts/[artifactId]/revisions/[artifactRevisionId]/content/route.ts`
+2. `app/api/p2/projects/[projectId]/asset-tasks/[assetTaskId]/execute-internal-test/route.ts`
+3. `prisma/migrations/<new-14-digit-timestamp>_p2_internal_attempt_artifact_lineage/migration.sql`
+4. `prisma/schema.prisma`
+5. `src/http/p2-asset-task-api.ts`
+6. `src/tasks/asset-task.ts`
+7. `src/tasks/internal-asset-task-execution.ts`
+8. `tests/integration/p2-s1i-internal-attempt-artifact-lineage.test.ts`
+9. `tests/unit/p2-internal-attempt-artifact-api.test.ts`
+
+The ordinal-3 binding must name the exact ordinal-2 registration merge SHA. It requires a fresh isolated loopback-only PostgreSQL 17 instance, deterministic Provider/object-storage substitutes, the complete migration/concurrency/rollback evidence frozen by ordinal 2, successful exact-Head CI, and two distinct exact-Head independent reviewers. It grants no production/shared database, real Provider, deployment, credential, fee, destructive, or lifecycle-file authority.
+
+The resource lifecycle is `PROPOSED_INACTIVE -> AVAILABLE -> BOUND -> CONSUMED`, with `BOUND -> EXPIRED` on any pre-merge termination or expiry. Consumption exists only after the exact ordinal-3 one-parent squash merge whose parent equals the bound expected base. After that exact merge and successful exact-main-push CI, `P2_S1I_COMPAT_DDL_V1=CONSUMED` and the program delegation is permanently `TERMINATED`; neither can be replayed.

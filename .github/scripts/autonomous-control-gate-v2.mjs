@@ -23,6 +23,61 @@ const CONTRACT_MARKER = 'CONTROL_PLANE_V2_CONTRACT';
 const APPROVAL_MARKER = 'CONTROL_PLANE_V2_APPROVAL';
 const LINK_MARKER = 'CONTROL_PLANE_V2_LINK';
 const LEDGER_MARKER = 'CONTROL_PLANE_V2_LEDGER';
+const PROGRAM_BINDING_MARKER = 'PROGRAM_CHILD_BINDING_JSON';
+const PROGRAM_LINK_MARKER = 'PROGRAM_CHILD_LINK_JSON';
+const PROGRAM_REVIEW_MARKER = 'PROGRAM_INDEPENDENT_REVIEW_JSON';
+const PROGRAM_ID = 'AI_VISION_V5_S1I_AUTONOMOUS_DELIVERY_V1';
+const PROGRAM_CONTRACT_SHA256 = 'c195546426c3804adaad2056b9f59a63decdec79ca88a20e7e47ee680f652f2a';
+const PROGRAM_SCHEMA = 'autonomous-delivery-program-v1';
+const PROGRAM_CHILD_SCHEMA = 'autonomous-delivery-child-v1';
+const PROGRAM_REVIEW_SCHEMA = 'autonomous-delivery-review-v1';
+const PROGRAM_ALLOWED_RISKS = new Set(['GREEN', 'YELLOW_BOUNDED']);
+const PROGRAM_PROHIBITED_ACTIONS = new Set([
+  'credential_or_permission_change',
+  'destructive_operation',
+  'force_push',
+  'force_with_lease',
+  'paid_action',
+  'production_deploy',
+  'protection_bypass',
+  'real_provider',
+  'security_check_disable',
+  'shared_or_persistent_database',
+]);
+const PROGRAM_PERMITTED_ACTIONS = new Set([
+  'branch',
+  'draft_pr',
+  'independent_ai_review',
+  'isolated_worktree',
+  'isolated_validation',
+  'issue',
+  'local_patch',
+  'normal_commit',
+  'normal_push',
+  'ready',
+  'safe_squash_merge',
+]);
+const PROGRAM_MAX_PR_COUNT = 3;
+const PROGRAM_LOCAL_CORRECTION_LIMIT = 3;
+const PROGRAM_PUBLISHED_CORRECTION_LIMIT = 2;
+const PROGRAM_CI_RERUN_LIMIT = 1;
+const PROGRAM_CHILD_2_PATHS = Object.freeze([
+  'AGENTS.md',
+  'docs/governance/GITHUB_AUTONOMOUS_DEVELOPMENT_CONTROL_PLANE_V2.md',
+  'docs/governance/V5_P2_ENTRY_GOVERNANCE.md',
+]);
+const PROGRAM_CHILD_3_FIXED_PATHS = Object.freeze([
+  'app/api/p2/projects/[projectId]/asset-tasks/[assetTaskId]/artifacts/[artifactId]/revisions/[artifactRevisionId]/content/route.ts',
+  'app/api/p2/projects/[projectId]/asset-tasks/[assetTaskId]/execute-internal-test/route.ts',
+  'prisma/schema.prisma',
+  'src/http/p2-asset-task-api.ts',
+  'src/tasks/asset-task.ts',
+  'src/tasks/internal-asset-task-execution.ts',
+  'tests/integration/p2-s1i-internal-attempt-artifact-lineage.test.ts',
+  'tests/unit/p2-internal-attempt-artifact-api.test.ts',
+]);
+const PROGRAM_CHILD_3_MIGRATION =
+  /^prisma\/migrations\/[0-9]{14}_p2_internal_attempt_artifact_lineage\/migration\.sql$/u;
 const TASK_PHASES = Object.freeze({
   ORDINARY_TASK: 'P2_LOCKED',
   CONTROL_PLANE_CHANGE: 'P2_LOCKED',
@@ -174,6 +229,35 @@ export function extractMarkedJson(text, marker) {
   return parsed;
 }
 
+function extractOptionalMarkedJson(text, marker) {
+  if (!mentionsMarker(text, marker)) return null;
+  return extractMarkedJson(text, marker);
+}
+
+export function canonicalProgramIssueContract(text) {
+  if (typeof text !== 'string' || text.startsWith('\uFEFF') || text.includes('\r')) {
+    throw new Error('PROGRAM_ISSUE_BODY_NOT_CANONICAL_UTF8_LF');
+  }
+  if (!text.endsWith('\n') || text.endsWith('\n\n')) {
+    throw new Error('PROGRAM_ISSUE_BODY_FINAL_LF_INVALID');
+  }
+  const begin = `<!-- ${PROGRAM_BINDING_MARKER}_BEGIN\n`;
+  const end = `\n${PROGRAM_BINDING_MARKER}_END -->\n`;
+  const start = text.indexOf(begin);
+  if (start < 0 || text.indexOf(begin, start + begin.length) >= 0) {
+    throw new Error('PROGRAM_BINDING_BLOCK_COUNT_INVALID');
+  }
+  const finish = text.indexOf(end, start + begin.length);
+  if (finish < 0 || text.indexOf(end, finish + end.length) >= 0) {
+    throw new Error('PROGRAM_BINDING_BLOCK_END_INVALID');
+  }
+  const canonical = `${text.slice(0, start)}${text.slice(finish + end.length)}`;
+  if (!canonical.endsWith('\n') || canonical.endsWith('\n\n') || canonical.includes('\r')) {
+    throw new Error('PROGRAM_ISSUE_CONTRACT_CANONICALIZATION_INVALID');
+  }
+  return canonical;
+}
+
 function exactKeys(object, keys, prefix) {
   const actual = Object.keys(object).sort();
   const expected = [...keys].sort();
@@ -210,6 +294,309 @@ export function isCanonicalHeadRef(value) {
   const segments = value.split('/');
   if (segments.some((segment) => segment.startsWith('.') || segment.endsWith('.lock'))) return false;
   return !/[\u0000-\u0020\u007f~^:?*\[\]]/u.test(value);
+}
+
+function isSha256(value) {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/u.test(value);
+}
+
+function isIsoInstant(value) {
+  return (
+    typeof value === 'string' &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(value) &&
+    Number.isFinite(Date.parse(value))
+  );
+}
+
+function isProgramIdentifier(value, prefix) {
+  return typeof value === 'string' && new RegExp(`^${prefix}[a-z0-9-]{16,128}$`, 'u').test(value);
+}
+
+function exactStringSet(actual, expected, label) {
+  if (
+    !Array.isArray(actual) ||
+    actual.some((item) => typeof item !== 'string') ||
+    new Set(actual).size !== actual.length ||
+    JSON.stringify([...actual].sort()) !== JSON.stringify([...expected].sort())
+  ) {
+    throw new Error(`${label}_INVALID`);
+  }
+}
+
+function validateProgramRootBinding(binding, issueBody) {
+  exactKeys(binding, [
+    'activatedAt', 'authorizedBaseSha', 'authorizedHeadRef', 'bindingType', 'childOrdinal',
+    'contractSha256', 'delegationActivationSha', 'exactAllowedPaths', 'expectedBaseSha',
+    'expiresAt', 'grantId', 'issueContractSha256', 'maxPrCount', 'nonce',
+    'permittedActions', 'permittedRiskClasses', 'previousMergeSha', 'programId',
+    'prohibitedActions', 'remainingChildIssueCount', 'repositoryId', 'riskClass', 'schema',
+  ], 'PROGRAM_ROOT_BINDING');
+  if (
+    binding.schema !== PROGRAM_SCHEMA ||
+    binding.bindingType !== 'PROGRAM_ROOT' ||
+    binding.programId !== PROGRAM_ID ||
+    binding.repositoryId !== POLICY.repositoryId ||
+    binding.childOrdinal !== 1 ||
+    binding.maxPrCount !== PROGRAM_MAX_PR_COUNT ||
+    binding.remainingChildIssueCount !== 2 ||
+    binding.riskClass !== 'YELLOW_BOUNDED' ||
+    binding.delegationActivationSha !== 'PENDING_PR1_MERGE_AND_EXACT_MAIN_CI_SUCCESS' ||
+    !isCommitSha(binding.authorizedBaseSha) ||
+    binding.authorizedBaseSha !== binding.expectedBaseSha ||
+    binding.authorizedBaseSha !== binding.previousMergeSha ||
+    !isCanonicalHeadRef(binding.authorizedHeadRef) ||
+    binding.contractSha256 !== PROGRAM_CONTRACT_SHA256 ||
+    !isSha256(binding.issueContractSha256) ||
+    !isProgramIdentifier(binding.grantId, 'grant-') ||
+    !/^[0-9a-f]{32}$/u.test(binding.nonce) ||
+    !isIsoInstant(binding.activatedAt) ||
+    !isIsoInstant(binding.expiresAt) ||
+    Date.parse(binding.activatedAt) >= Date.parse(binding.expiresAt)
+  ) {
+    throw new Error('PROGRAM_ROOT_BINDING_SHAPE_INVALID');
+  }
+  if (
+    !Array.isArray(binding.exactAllowedPaths) ||
+    binding.exactAllowedPaths.length === 0 ||
+    binding.exactAllowedPaths.some((path) => !isCanonicalRepositoryPath(path)) ||
+    new Set(binding.exactAllowedPaths).size !== binding.exactAllowedPaths.length
+  ) {
+    throw new Error('PROGRAM_ROOT_ALLOWLIST_INVALID');
+  }
+  exactStringSet(binding.permittedRiskClasses, PROGRAM_ALLOWED_RISKS, 'PROGRAM_ROOT_RISKS');
+  exactStringSet(binding.permittedActions, PROGRAM_PERMITTED_ACTIONS, 'PROGRAM_ROOT_ACTIONS');
+  exactStringSet(binding.prohibitedActions, PROGRAM_PROHIBITED_ACTIONS, 'PROGRAM_ROOT_PROHIBITIONS');
+  if (sha256Text(canonicalProgramIssueContract(issueBody)) !== binding.issueContractSha256) {
+    throw new Error('PROGRAM_ROOT_ISSUE_CONTRACT_SHA_MISMATCH');
+  }
+  return binding;
+}
+
+function validateProgramResourceRequest(resource) {
+  exactKeys(
+    resource,
+    resource.action === 'REGISTER'
+      ? ['action', 'contractSha256', 'name']
+      : ['action', 'name', 'registrationMergeSha'],
+    'PROGRAM_RESOURCE',
+  );
+  if (!/^[A-Z][A-Z0-9_]{2,127}$/u.test(resource.name)) {
+    throw new Error('PROGRAM_RESOURCE_NAME_INVALID');
+  }
+  if (resource.action === 'REGISTER') {
+    if (!isSha256(resource.contractSha256)) throw new Error('PROGRAM_RESOURCE_CONTRACT_SHA_INVALID');
+  } else if (resource.action === 'CONSUME') {
+    if (!isCommitSha(resource.registrationMergeSha)) {
+      throw new Error('PROGRAM_RESOURCE_REGISTRATION_MERGE_INVALID');
+    }
+  } else {
+    throw new Error('PROGRAM_RESOURCE_ACTION_INVALID');
+  }
+  return resource;
+}
+
+function validateProgramChildBinding(binding, issueBody) {
+  exactKeys(binding, [
+    'activatedAt', 'authorizedBaseSha', 'authorizedHeadRef', 'childOrdinal', 'contractSha256',
+    'delegationActivationSha', 'exactAllowedPaths', 'expectedBaseSha', 'expiresAt', 'grantId',
+    'issueContractSha256', 'localCorrectionLimit', 'nonce', 'orchestratorSessionId',
+    'previousMergeSha', 'programId', 'publishedCorrectionLimit', 'repositoryId',
+    'requiredChecks', 'resources', 'riskClass', 'rootIssueNumber', 'schema', 'taskClass',
+  ], 'PROGRAM_CHILD_BINDING');
+  if (
+    binding.schema !== PROGRAM_CHILD_SCHEMA ||
+    binding.programId !== PROGRAM_ID ||
+    binding.repositoryId !== POLICY.repositoryId ||
+    ![2, 3].includes(binding.childOrdinal) ||
+    !isCommitSha(binding.delegationActivationSha) ||
+    !isCommitSha(binding.authorizedBaseSha) ||
+    binding.authorizedBaseSha !== binding.expectedBaseSha ||
+    binding.authorizedBaseSha !== binding.previousMergeSha ||
+    !isCanonicalHeadRef(binding.authorizedHeadRef) ||
+    !isSha256(binding.contractSha256) ||
+    !isSha256(binding.issueContractSha256) ||
+    !isProgramIdentifier(binding.grantId, 'grant-') ||
+    !/^[0-9a-f]{32}$/u.test(binding.nonce) ||
+    !/^orchestrator-[a-z0-9-]{16,128}$/u.test(binding.orchestratorSessionId) ||
+    !isIsoInstant(binding.activatedAt) ||
+    !isIsoInstant(binding.expiresAt) ||
+    Date.parse(binding.activatedAt) >= Date.parse(binding.expiresAt) ||
+    binding.localCorrectionLimit !== PROGRAM_LOCAL_CORRECTION_LIMIT ||
+    binding.publishedCorrectionLimit !== PROGRAM_PUBLISHED_CORRECTION_LIMIT ||
+    binding.rootIssueNumber < 1 ||
+    !Number.isInteger(binding.rootIssueNumber) ||
+    !PROGRAM_ALLOWED_RISKS.has(binding.riskClass) ||
+    !['CONTROL_PLANE_CHANGE', 'P2_IMPLEMENTATION'].includes(binding.taskClass) ||
+    (binding.childOrdinal === 2 && binding.taskClass !== 'CONTROL_PLANE_CHANGE') ||
+    (binding.childOrdinal === 3 && binding.taskClass !== 'P2_IMPLEMENTATION')
+  ) {
+    throw new Error('PROGRAM_CHILD_BINDING_SHAPE_INVALID');
+  }
+  if (
+    !Array.isArray(binding.exactAllowedPaths) ||
+    binding.exactAllowedPaths.length === 0 ||
+    binding.exactAllowedPaths.some((path) => !isCanonicalRepositoryPath(path)) ||
+    new Set(binding.exactAllowedPaths).size !== binding.exactAllowedPaths.length
+  ) {
+    throw new Error('PROGRAM_CHILD_ALLOWLIST_INVALID');
+  }
+  if (
+    binding.taskClass === 'CONTROL_PLANE_CHANGE' &&
+    binding.exactAllowedPaths.some((path) => !pathIsProtected(path))
+  ) {
+    throw new Error('PROGRAM_CHILD_CONTROL_PATH_INVALID');
+  }
+  if (
+    binding.taskClass !== 'CONTROL_PLANE_CHANGE' &&
+    binding.exactAllowedPaths.some((path) => pathIsProtected(path))
+  ) {
+    throw new Error('PROGRAM_CHILD_PROTECTED_PATH_INVALID');
+  }
+  if (binding.childOrdinal === 2) {
+    if (
+      JSON.stringify([...binding.exactAllowedPaths].sort()) !==
+      JSON.stringify([...PROGRAM_CHILD_2_PATHS].sort())
+    ) {
+      throw new Error('PROGRAM_CHILD_2_ALLOWLIST_NOT_FROZEN');
+    }
+  } else {
+    const migrationPaths = binding.exactAllowedPaths.filter((path) =>
+      path.startsWith('prisma/migrations/')
+    );
+    const nonMigrationPaths = binding.exactAllowedPaths.filter((path) =>
+      !path.startsWith('prisma/migrations/')
+    );
+    if (
+      migrationPaths.length !== 1 || !PROGRAM_CHILD_3_MIGRATION.test(migrationPaths[0]) ||
+      JSON.stringify(nonMigrationPaths.sort()) !== JSON.stringify([...PROGRAM_CHILD_3_FIXED_PATHS].sort())
+    ) {
+      throw new Error('PROGRAM_CHILD_3_ALLOWLIST_NOT_FROZEN');
+    }
+  }
+  exactStringSet(binding.requiredChecks, [POLICY.qualityJobName], 'PROGRAM_CHILD_REQUIRED_CHECKS');
+  if (!Array.isArray(binding.resources) || binding.resources.length > 1) {
+    throw new Error('PROGRAM_CHILD_RESOURCE_COUNT_INVALID');
+  }
+  binding.resources.forEach(validateProgramResourceRequest);
+  if (
+    (binding.childOrdinal === 2 && binding.resources[0]?.action !== 'REGISTER') ||
+    (binding.childOrdinal === 3 && binding.resources[0]?.action !== 'CONSUME')
+  ) {
+    throw new Error('PROGRAM_CHILD_RESOURCE_STAGE_INVALID');
+  }
+  if (sha256Text(canonicalProgramIssueContract(issueBody)) !== binding.issueContractSha256) {
+    throw new Error('PROGRAM_CHILD_ISSUE_CONTRACT_SHA_MISMATCH');
+  }
+  return binding;
+}
+
+function validateProgramLink(link, binding, issue, issueBodySha256, pr) {
+  exactKeys(link, [
+    'authorizedBaseSha', 'authorizedHeadRef', 'childOrdinal', 'ciRerunCount',
+    'delegationActivationSha', 'grantId', 'issueBodyReadbackSha256', 'issueContractSha256',
+    'issueNumber', 'localCorrectionCount', 'nonce', 'programId', 'publishedCorrectionCount',
+    'processRetryCount', 'schema',
+  ], 'PROGRAM_CHILD_LINK');
+  if (
+    link.schema !== PROGRAM_CHILD_SCHEMA ||
+    link.programId !== binding.programId ||
+    link.issueNumber !== issue.number ||
+    link.issueBodyReadbackSha256 !== issueBodySha256 ||
+    link.issueContractSha256 !== binding.issueContractSha256 ||
+    link.grantId !== binding.grantId ||
+    link.nonce !== binding.nonce ||
+    link.childOrdinal !== binding.childOrdinal ||
+    link.authorizedBaseSha !== binding.authorizedBaseSha ||
+    link.authorizedHeadRef !== binding.authorizedHeadRef ||
+    link.delegationActivationSha !== binding.delegationActivationSha ||
+    pr.head.ref !== binding.authorizedHeadRef ||
+    !Number.isInteger(link.localCorrectionCount) ||
+    link.localCorrectionCount < 0 ||
+    link.localCorrectionCount > binding.localCorrectionLimit ||
+    !Number.isInteger(link.publishedCorrectionCount) ||
+    link.publishedCorrectionCount < 0 ||
+    link.publishedCorrectionCount > binding.publishedCorrectionLimit ||
+    !Number.isInteger(link.ciRerunCount) ||
+    link.ciRerunCount < 0 ||
+    link.ciRerunCount > PROGRAM_CI_RERUN_LIMIT ||
+    !Number.isInteger(link.processRetryCount) ||
+    link.processRetryCount < 0 ||
+    link.processRetryCount > 2
+  ) {
+    throw new Error('PROGRAM_CHILD_LINK_BINDING_INVALID');
+  }
+  return link;
+}
+
+function validateProgramReview(comments, binding, pr) {
+  const current = [];
+  for (const comment of comments) {
+    if (!mentionsMarker(comment.body, PROGRAM_REVIEW_MARKER)) continue;
+    if (!isOwner(comment.user, comment.authorAssociation)) continue;
+    if (!comment.createdAt || comment.createdAt !== comment.updatedAt) {
+      throw new Error('PROGRAM_REVIEW_EDITED_OR_TIME_MISSING');
+    }
+    const review = extractMarkedJson(comment.body, PROGRAM_REVIEW_MARKER);
+    exactKeys(review, [
+      'findings', 'headSha', 'prNumber', 'programId', 'reviewedAt', 'reviewerSessionId',
+      'schema', 'verdict',
+    ], 'PROGRAM_REVIEW');
+    if (
+      review.schema !== PROGRAM_REVIEW_SCHEMA ||
+      review.programId !== binding.programId ||
+      review.prNumber !== pr.number ||
+      review.headSha !== pr.head.sha ||
+      review.verdict !== 'PASS' ||
+      !Array.isArray(review.findings) ||
+      review.findings.length !== 0 ||
+      !isIsoInstant(review.reviewedAt) ||
+      !/^reviewer-[a-z0-9-]{16,128}$/u.test(review.reviewerSessionId) ||
+      review.reviewerSessionId === binding.orchestratorSessionId
+    ) {
+      continue;
+    }
+    current.push(review);
+  }
+  const expectedCount = binding.childOrdinal === 3 ? 2 : 1;
+  if (
+    current.length !== expectedCount ||
+    new Set(current.map((review) => review.reviewerSessionId)).size !== current.length
+  ) {
+    throw new Error(`PROGRAM_CURRENT_REVIEW_COUNT_${current.length}_EXPECTED_${expectedCount}`);
+  }
+  return current;
+}
+
+export function evaluateNamedSingleUseResource({ bindings, currentBinding }) {
+  const requests = currentBinding.resources;
+  if (requests.length === 0) return 'NOT_APPLICABLE';
+  const request = requests[0];
+  const prior = bindings.filter((entry) =>
+    entry.pr?.merged === true && entry.mergeParentValid === true
+  );
+  const registrations = prior.filter((entry) =>
+    entry.binding.resources?.some((resource) =>
+      resource.action === 'REGISTER' && resource.name === request.name
+    )
+  );
+  const consumptions = prior.filter((entry) =>
+    entry.binding.resources?.some((resource) =>
+      resource.action === 'CONSUME' && resource.name === request.name
+    )
+  );
+  if (request.action === 'REGISTER') {
+    if (registrations.length !== 0 || consumptions.length !== 0) {
+      throw new Error('PROGRAM_RESOURCE_REPLAYED_REGISTRATION');
+    }
+    return 'REGISTER_ON_CURRENT_MERGE';
+  }
+  if (registrations.length !== 1 || consumptions.length !== 0) {
+    throw new Error('PROGRAM_RESOURCE_NOT_AVAILABLE');
+  }
+  if (registrations[0].pr.mergeCommitSha !== request.registrationMergeSha) {
+    throw new Error('PROGRAM_RESOURCE_REGISTRATION_BINDING_MISMATCH');
+  }
+  return 'CONSUME_ON_CURRENT_MERGE';
 }
 
 function isOwnerIdentity(user) {
@@ -797,7 +1184,211 @@ function validatePrTimeline(prTimeline, ci) {
   }
 }
 
+function validateProgramHistory(program, currentBinding) {
+  if (!Array.isArray(program.bindings)) throw new Error('PROGRAM_HISTORY_MISSING');
+  const relevant = program.bindings.filter((entry) => entry.binding?.programId === PROGRAM_ID);
+  const grantIds = new Set();
+  const nonces = new Set();
+  const ordinals = new Set();
+  for (const entry of relevant) {
+    const binding = entry.binding;
+    const nonceKey = `${binding.grantId}:${binding.nonce}`;
+    if (grantIds.has(binding.grantId)) throw new Error('PROGRAM_GRANT_ID_REPLAY');
+    if (nonces.has(nonceKey)) throw new Error('PROGRAM_NONCE_REPLAY');
+    if (ordinals.has(binding.childOrdinal)) throw new Error('PROGRAM_ORDINAL_REPLAY');
+    grantIds.add(binding.grantId);
+    nonces.add(nonceKey);
+    ordinals.add(binding.childOrdinal);
+  }
+  const expectedOrdinals = Array.from({ length: currentBinding.childOrdinal }, (_, index) => index + 1);
+  if (JSON.stringify([...ordinals].sort((a, b) => a - b)) !== JSON.stringify(expectedOrdinals)) {
+    throw new Error('PROGRAM_ORDINAL_SEQUENCE_INVALID');
+  }
+  const priorChildren = relevant
+    .filter((entry) => entry.binding.childOrdinal > 1 && entry.binding.childOrdinal < currentBinding.childOrdinal)
+    .sort((a, b) => a.binding.childOrdinal - b.binding.childOrdinal);
+  if (priorChildren.some((entry) => entry.pr?.merged !== true || entry.mergeParentValid !== true)) {
+    throw new Error('PROGRAM_PRIOR_CHILD_NOT_EXACTLY_CONSUMED');
+  }
+  const expectedPreviousMerge = currentBinding.childOrdinal === 2
+    ? program.root.pr.mergeCommitSha
+    : priorChildren.at(-1)?.pr?.mergeCommitSha;
+  if (
+    !isCommitSha(expectedPreviousMerge) ||
+    currentBinding.previousMergeSha !== expectedPreviousMerge ||
+    currentBinding.expectedBaseSha !== expectedPreviousMerge
+  ) {
+    throw new Error('PROGRAM_CHILD_PREVIOUS_MERGE_BINDING_INVALID');
+  }
+  return relevant;
+}
+
+function validateProgramTimeline(snapshot) {
+  const timeline = snapshot.prTimeline ?? [];
+  const ready = timeline.filter((item) => item.event === 'ready_for_review');
+  const converted = timeline.filter((item) => item.event === 'convert_to_draft');
+  if (converted.length > 0 || ready.length > 1) {
+    throw new Error('PROGRAM_PR_LIFECYCLE_HISTORY_INVALID');
+  }
+  if (snapshot.pr.draft === true) {
+    if (ready.length !== 0) throw new Error('PROGRAM_DRAFT_READY_HISTORY_INVALID');
+  } else {
+    if (ready.length !== 1 || !isOwnerIdentity(ready[0].actor)) {
+      throw new Error('PROGRAM_READY_EVENT_NOT_EXACT_ORCHESTRATOR_OWNER');
+    }
+  }
+  const ciCreatedAt = Date.parse(snapshot.ci.createdAt);
+  for (const item of timeline) {
+    if (item.event === 'ready_for_review' || item.event === 'convert_to_draft') continue;
+    if (!CI_INVALIDATING_PR_EVENTS.has(item.event)) continue;
+    const createdAt = Date.parse(item.createdAt);
+    if (!Number.isFinite(createdAt) || createdAt >= ciCreatedAt) {
+      throw new Error(`PROGRAM_CI_INVALIDATED_BY_PR_TIMELINE:${item.event}`);
+    }
+  }
+}
+
+export function evaluateProgramChildSnapshot(snapshot) {
+  let details;
+  try {
+    validateRepository(snapshot.repository);
+    if (snapshot.repository.allowSquashMerge !== true) {
+      throw new Error('PROGRAM_SQUASH_MERGE_NOT_AVAILABLE');
+    }
+    if (
+      snapshot.issue?.state !== 'open' ||
+      !isOwner(snapshot.issue?.user, 'OWNER') ||
+      snapshot.issue.isPullRequest !== false
+    ) {
+      throw new Error('PROGRAM_ISSUE_IDENTITY_OR_STATE_INVALID');
+    }
+    const binding = validateProgramChildBinding(
+      snapshot.program.binding ?? extractMarkedJson(snapshot.issue.body, PROGRAM_BINDING_MARKER),
+      snapshot.issue.body,
+    );
+    const issueBodySha256 = sha256Text(snapshot.issue.body);
+    if (
+      snapshot.pr?.state !== 'open' || snapshot.pr.merged === true ||
+      snapshot.pr.base?.ref !== POLICY.defaultBranch ||
+      snapshot.pr.base?.repoId !== POLICY.repositoryId ||
+      snapshot.pr.head?.repoId !== POLICY.repositoryId ||
+      snapshot.pr.base?.sha !== binding.authorizedBaseSha ||
+      snapshot.pr.head?.ref !== binding.authorizedHeadRef ||
+      !isCommitSha(snapshot.pr.head?.sha) ||
+      !isOwnerIdentity(snapshot.pr.user)
+    ) {
+      throw new Error('PROGRAM_PR_IDENTITY_OR_STATE_INVALID');
+    }
+    if (
+      !Array.isArray(snapshot.relatedPullRequests) || snapshot.relatedPullRequests.length !== 1 ||
+      snapshot.relatedPullRequests[0].number !== snapshot.pr.number
+    ) {
+      throw new Error('PROGRAM_PR_NOT_UNIQUE_FOR_BRANCH');
+    }
+    const link = validateProgramLink(
+      snapshot.program.link ?? extractMarkedJson(snapshot.pr.body, PROGRAM_LINK_MARKER),
+      binding,
+      snapshot.issue,
+      issueBodySha256,
+      snapshot.pr,
+    );
+    const rootBinding = validateProgramRootBinding(
+      snapshot.program.root.binding,
+      snapshot.program.root.issue.body,
+    );
+    if (
+      snapshot.program.root.issue.number !== binding.rootIssueNumber ||
+      snapshot.program.root.issue.user?.id !== POLICY.owner.id ||
+      snapshot.program.root.legacyApprovalValid !== true ||
+      snapshot.program.root.diffValid !== true ||
+      snapshot.program.root.pr?.merged !== true ||
+      snapshot.program.root.mergeParentValid !== true ||
+      snapshot.program.root.pr.mergeCommitSha !== binding.delegationActivationSha ||
+      snapshot.program.root.pr.head.ref !== rootBinding.authorizedHeadRef ||
+      snapshot.program.root.pr.base.sha !== rootBinding.authorizedBaseSha ||
+      snapshot.program.root.activationCi?.status !== 'completed' ||
+      snapshot.program.root.activationCi?.conclusion !== 'success' ||
+      snapshot.program.root.activationCi?.headSha !== binding.delegationActivationSha
+    ) {
+      throw new Error('PROGRAM_DELEGATION_NOT_EXACTLY_ACTIVATED');
+    }
+    const now = Date.parse(snapshot.program.now);
+    if (
+      !Number.isFinite(now) ||
+      now < Date.parse(binding.activatedAt) || now >= Date.parse(binding.expiresAt) ||
+      now >= Date.parse(rootBinding.expiresAt)
+    ) {
+      throw new Error('PROGRAM_DELEGATION_EXPIRED_OR_NOT_YET_ACTIVE');
+    }
+    if (snapshot.program.mainSha !== binding.expectedBaseSha) {
+      throw new Error('PROGRAM_MAIN_BASE_DRIFT');
+    }
+    const history = validateProgramHistory(snapshot.program, binding);
+    const shapeContract = {
+      allowedPaths: binding.exactAllowedPaths,
+      taskClass: binding.taskClass,
+    };
+    const pathResult = validateChangedFiles(snapshot.changedFiles, shapeContract);
+    if (pathResult.lifecycleChange) throw new Error('PROGRAM_LIFECYCLE_CHANGE_NOT_AUTHORIZED');
+    validateTrigger(snapshot);
+    const conclusion = validateCi(snapshot.ci, snapshot.pr, binding.activatedAt);
+    if (conclusion !== 'success') throw new Error('PROGRAM_CI_NOT_SUCCESS');
+    validateProgramTimeline(snapshot);
+    const reviews = validateProgramReview(snapshot.prComments ?? [], binding, snapshot.pr);
+    const resourceState = evaluateNamedSingleUseResource({
+      bindings: history,
+      currentBinding: binding,
+    });
+    const ready = snapshot.pr.draft === true;
+    if (ready && snapshot.event.type !== 'workflow_run') {
+      throw new Error('PROGRAM_READY_GATE_REQUIRES_EXACT_CI_TRIGGER');
+    }
+    if (!ready && snapshot.event.type !== 'issue_comment') {
+      throw new Error('PROGRAM_MERGE_GATE_REQUIRES_RECONCILE_TRIGGER');
+    }
+    details = {
+      issueNumber: snapshot.issue.number,
+      issueUrl: `https://github.com/${POLICY.repositoryFullName}/issues/${snapshot.issue.number}`,
+      issueBodySha256,
+      authorizedBaseSha: binding.authorizedBaseSha,
+      prNumber: snapshot.pr.number,
+      prUrl: `https://github.com/${POLICY.repositoryFullName}/pull/${snapshot.pr.number}`,
+      headSha: snapshot.pr.head.sha,
+      operationPath: `https://github.com/${POLICY.repositoryFullName}/tree/${snapshot.pr.head.sha}`,
+      outputPath: `https://github.com/${POLICY.repositoryFullName}/pull/${snapshot.pr.number}`,
+      changedFiles: binding.exactAllowedPaths.slice().sort(),
+      taskClass: binding.taskClass,
+      phase: ready ? 'PROGRAM_CHILD_DRAFT_GATE' : 'PROGRAM_CHILD_MERGE_GATE',
+      requestedRepairLimit: 0,
+      localCorrectionRoundCount: link.localCorrectionCount,
+      publishedCorrectionRoundCount: link.publishedCorrectionCount,
+      processRetryCount: link.processRetryCount,
+      ciRerunCount: link.ciRerunCount,
+      resourceState,
+      reviewSessionIds: reviews.map((review) => review.reviewerSessionId).sort(),
+      ciStatus: `${snapshot.ci.status}/${snapshot.ci.conclusion}`,
+      autoFixRoundCount: 0,
+      controlState: 'PROGRAM_DELEGATION_ACTIVE',
+      p2Status: 'PROGRAM_CHILD',
+      p2SemanticEnforcement: 'FROZEN_PROGRAM_CONTRACT_AND_INDEPENDENT_REVIEW',
+      autoMerge: 'ONE_SAFE_SQUASH_BY_ORCHESTRATOR_ONLY',
+      unverifiedItems: [],
+      humanActionRequired: 'NONE_WITHIN_DELEGATED_SCOPE',
+    };
+    return pass(
+      ready ? 'PROGRAM_CHILD_SAFE_TO_READY' : 'PROGRAM_CHILD_SAFE_TO_SQUASH_MERGE',
+      details,
+    );
+  } catch (error) {
+    return hold([error instanceof Error ? error.message : 'UNKNOWN_PROGRAM_GATE_ERROR'], {
+      ...details,
+      humanActionRequired: 'STOP_PROGRAM_AND_REVIEW_HOLD',
+    });
+  }
+}
+
 export function evaluateControlSnapshot(snapshot) {
+  if (snapshot.program) return evaluateProgramChildSnapshot(snapshot);
   let details;
   try {
     validateRepository(snapshot.repository);
@@ -1256,13 +1847,230 @@ async function repositoryAutoMerge(api) {
   return data.repository.autoMergeAllowed;
 }
 
-async function loadSnapshotOnce(api, repositoryPath, prNumber, eventName, event) {
+async function exactMainPushCi(api, repositoryPath, headSha) {
+  const [{ data }, { data: workflow }] = await Promise.all([
+    api.request(
+      `${repositoryPath}/actions/workflows/ci.yml/runs?event=push&branch=${POLICY.defaultBranch}` +
+      `&head_sha=${headSha}&per_page=100`,
+    ),
+    api.request(`${repositoryPath}/actions/workflows/${POLICY.qualityWorkflowId}`),
+  ]);
+  if (
+    workflow?.id !== POLICY.qualityWorkflowId || workflow?.name !== POLICY.qualityWorkflowName ||
+    workflow?.path !== POLICY.qualityWorkflowPath || workflow?.state !== 'active'
+  ) {
+    throw new Error('PROGRAM_ACTIVATION_CI_WORKFLOW_INVALID');
+  }
+  if (
+    !Array.isArray(data.workflow_runs) || !Number.isInteger(data.total_count) ||
+    data.total_count !== data.workflow_runs.length
+  ) {
+    throw new Error('PROGRAM_ACTIVATION_CI_RUNS_AMBIGUOUS');
+  }
+  const expectedName = `${POLICY.qualityWorkflowName} push PR-none base-${headSha} head-${headSha}`;
+  const eligible = data.workflow_runs.filter((run) =>
+    run.workflow_id === POLICY.qualityWorkflowId && run.path === POLICY.qualityWorkflowPath &&
+    run.event === 'push' && run.head_sha === headSha && run.head_branch === POLICY.defaultBranch &&
+    run.repository?.id === POLICY.repositoryId && run.head_repository?.id === POLICY.repositoryId &&
+    run.name === expectedName && run.display_title === expectedName
+  );
+  if (eligible.length !== 1) throw new Error(`PROGRAM_ACTIVATION_CI_COUNT_${eligible.length}`);
+  const run = eligible[0];
+  if (
+    run.status !== 'completed' || run.conclusion !== 'success' ||
+    !Number.isInteger(run.check_suite_id) || !Number.isInteger(run.run_attempt) || run.run_attempt < 1
+  ) {
+    throw new Error('PROGRAM_ACTIVATION_CI_NOT_SUCCESS');
+  }
+  const [{ data: jobs }, { data: suite }] = await Promise.all([
+    api.request(`${repositoryPath}/actions/runs/${run.id}/jobs?filter=latest&per_page=100`),
+    api.request(`${repositoryPath}/check-suites/${run.check_suite_id}`),
+  ]);
+  if (
+    jobs.total_count !== 1 || !Array.isArray(jobs.jobs) || jobs.jobs.length !== 1 ||
+    jobs.jobs[0].name !== POLICY.qualityJobName || jobs.jobs[0].status !== 'completed' ||
+    jobs.jobs[0].conclusion !== 'success' || jobs.jobs[0].head_sha !== headSha ||
+    jobs.jobs[0].run_id !== run.id || jobs.jobs[0].run_attempt !== run.run_attempt ||
+    suite.id !== run.check_suite_id || suite.repository?.id !== POLICY.repositoryId ||
+    suite.app?.id !== POLICY.actionsApp.id || suite.app?.slug !== POLICY.actionsApp.slug ||
+    suite.head_sha !== headSha || suite.after !== headSha ||
+    suite.status !== 'completed' || suite.conclusion !== 'success'
+  ) {
+    throw new Error('PROGRAM_ACTIVATION_CI_EVIDENCE_INVALID');
+  }
+  return { status: run.status, conclusion: run.conclusion, headSha, id: run.id };
+}
+
+function normalizeHistoricalPull(pr) {
+  return {
+    number: pr.number,
+    state: pr.state,
+    draft: pr.draft,
+    merged: pr.merged === true || Boolean(pr.merged_at),
+    mergeCommitSha: pr.merge_commit_sha ?? null,
+    body: pr.body ?? '',
+    changedFilesCount: pr.changed_files,
+    user: normalizeUser(pr.user),
+    base: { ref: pr.base?.ref, sha: pr.base?.sha, repoId: pr.base?.repo?.id },
+    head: { ref: pr.head?.ref, sha: pr.head?.sha, repoId: pr.head?.repo?.id },
+  };
+}
+
+async function mergeParentIsExact(api, repositoryPath, pr) {
+  if (!pr.merged || !isCommitSha(pr.mergeCommitSha)) return false;
+  const { data: commit } = await api.request(`${repositoryPath}/git/commits/${pr.mergeCommitSha}`);
+  return (
+    commit.sha === pr.mergeCommitSha && Array.isArray(commit.parents) && commit.parents.length === 1 &&
+    commit.parents[0].sha === pr.base.sha
+  );
+}
+
+async function validateProgramRootPull(api, repositoryPath, rootPr, rootBinding) {
+  if (
+    rootPr.state !== 'closed' || rootPr.merged !== true || !isOwnerIdentity(rootPr.user) ||
+    rootPr.base.ref !== POLICY.defaultBranch || rootPr.base.repoId !== POLICY.repositoryId ||
+    rootPr.head.repoId !== POLICY.repositoryId || rootPr.base.sha !== rootBinding.authorizedBaseSha ||
+    rootPr.head.ref !== rootBinding.authorizedHeadRef || !isCommitSha(rootPr.head.sha) ||
+    !Number.isInteger(rootPr.changedFilesCount)
+  ) {
+    throw new Error('PROGRAM_ROOT_PR_IDENTITY_INVALID');
+  }
+  const [files, { data: baseCommit }, { data: headCommit }] = await Promise.all([
+    api.list(`${repositoryPath}/pulls/${rootPr.number}/files`),
+    api.request(`${repositoryPath}/git/commits/${rootPr.base.sha}`),
+    api.request(`${repositoryPath}/git/commits/${rootPr.head.sha}`),
+  ]);
+  const [{ data: baseTree }, { data: headTree }] = await Promise.all([
+    api.request(`${repositoryPath}/git/trees/${baseCommit.tree.sha}?recursive=1`),
+    api.request(`${repositoryPath}/git/trees/${headCommit.tree.sha}?recursive=1`),
+  ]);
+  const changedFiles = normalizeChangedFiles(
+    files,
+    treeMap(baseCommit, baseTree, rootPr.base.sha, 'PROGRAM_ROOT_BASE'),
+    treeMap(headCommit, headTree, rootPr.head.sha, 'PROGRAM_ROOT_HEAD'),
+    rootPr.changedFilesCount,
+  );
+  const result = validateChangedFiles(changedFiles, {
+    allowedPaths: rootBinding.exactAllowedPaths,
+    taskClass: 'CONTROL_PLANE_CHANGE',
+  });
+  if (result.lifecycleChange) throw new Error('PROGRAM_ROOT_LIFECYCLE_CHANGE_INVALID');
+  return true;
+}
+
+async function loadProgramContext(api, repositoryPath, currentIssue, normalizedPr, programLink, observedAt) {
+  const binding = validateProgramChildBinding(
+    extractMarkedJson(currentIssue.body ?? '', PROGRAM_BINDING_MARKER),
+    currentIssue.body ?? '',
+  );
+  if (programLink.issueNumber !== currentIssue.number) throw new Error('PROGRAM_LINKED_ISSUE_MISMATCH');
+  const [{ data: rootIssue }, rootCommentsRaw, allIssues, { data: mainCommit }] = await Promise.all([
+    api.request(`${repositoryPath}/issues/${binding.rootIssueNumber}`),
+    api.list(`${repositoryPath}/issues/${binding.rootIssueNumber}/comments`),
+    api.list(`${repositoryPath}/issues?state=all`),
+    api.request(`${repositoryPath}/commits/${POLICY.defaultBranch}`),
+  ]);
+  const rootBinding = validateProgramRootBinding(
+    extractMarkedJson(rootIssue.body ?? '', PROGRAM_BINDING_MARKER),
+    rootIssue.body ?? '',
+  );
+  const rootPullsRaw = await api.list(
+    `${repositoryPath}/pulls?state=all&head=${encodeURIComponent(`${POLICY.owner.login}:${rootBinding.authorizedHeadRef}`)}`,
+  );
+  if (rootPullsRaw.length !== 1) throw new Error(`PROGRAM_ROOT_PR_COUNT_${rootPullsRaw.length}`);
+  const { data: rootPullDetail } = await api.request(
+    `${repositoryPath}/pulls/${rootPullsRaw[0].number}`,
+  );
+  const rootPr = normalizeHistoricalPull(rootPullDetail);
+  const rootIssueNormalized = {
+    number: rootIssue.number,
+    body: rootIssue.body ?? '',
+  };
+  const rootContract = validateContract(
+    extractMarkedJson(rootIssue.body ?? '', CONTRACT_MARKER),
+  );
+  const rootIssueBodySha256 = sha256Text(rootIssue.body ?? '');
+  const rootLegacyLink = validateLink(rootPr, rootIssueNormalized, rootContract, rootIssueBodySha256);
+  currentApproval(
+    rootCommentsRaw.map(normalizeComment).sort((a, b) => a.id - b.id),
+    rootLegacyLink.approvalCommentId,
+    rootContract,
+    rootIssueBodySha256,
+  );
+  const [rootMergeParentValid, activationCi, rootDiffValid] = await Promise.all([
+    mergeParentIsExact(api, repositoryPath, rootPr),
+    exactMainPushCi(api, repositoryPath, rootPr.mergeCommitSha),
+    validateProgramRootPull(api, repositoryPath, rootPr, rootBinding),
+  ]);
+  const bindingIssues = [];
+  for (const issue of allIssues) {
+    if (!mentionsMarker(issue.body ?? '', PROGRAM_BINDING_MARKER)) continue;
+    if (!isOwnerIdentity(issue.user) || issue.pull_request) continue;
+    const candidate = extractMarkedJson(issue.body ?? '', PROGRAM_BINDING_MARKER);
+    if (candidate.programId !== PROGRAM_ID) continue;
+    const validated = candidate.childOrdinal === 1
+      ? validateProgramRootBinding(candidate, issue.body ?? '')
+      : validateProgramChildBinding(candidate, issue.body ?? '');
+    bindingIssues.push({ issue, binding: validated });
+  }
+  const history = [];
+  for (const entry of bindingIssues) {
+    if (entry.binding.childOrdinal === 1) {
+      history.push({ binding: entry.binding, issueNumber: entry.issue.number, pr: rootPr, mergeParentValid: rootMergeParentValid });
+      continue;
+    }
+    if (entry.issue.number === currentIssue.number) {
+      history.push({
+        binding: entry.binding,
+        issueNumber: entry.issue.number,
+        pr: { ...normalizedPr, mergeCommitSha: null },
+        mergeParentValid: false,
+      });
+      continue;
+    }
+    const pulls = await api.list(
+      `${repositoryPath}/pulls?state=all&head=${encodeURIComponent(`${POLICY.owner.login}:${entry.binding.authorizedHeadRef}`)}`,
+    );
+    if (pulls.length !== 1) throw new Error(`PROGRAM_HISTORY_PR_COUNT_${pulls.length}`);
+    const historicalPr = normalizeHistoricalPull(pulls[0]);
+    history.push({
+      binding: entry.binding,
+      issueNumber: entry.issue.number,
+      pr: historicalPr,
+      mergeParentValid: await mergeParentIsExact(api, repositoryPath, historicalPr),
+    });
+  }
+  return {
+    binding,
+    link: programLink,
+    now: observedAt,
+    mainSha: mainCommit.sha,
+    root: {
+      issue: {
+        number: rootIssue.number,
+        state: rootIssue.state,
+        body: rootIssue.body ?? '',
+        user: normalizeUser(rootIssue.user),
+      },
+      binding: rootBinding,
+      pr: rootPr,
+      mergeParentValid: rootMergeParentValid,
+      legacyApprovalValid: true,
+      diffValid: rootDiffValid,
+      activationCi,
+    },
+    bindings: history,
+  };
+}
+
+async function loadSnapshotOnce(api, repositoryPath, prNumber, eventName, event, observedAt) {
   const [{ data: repo }, { data: pr }, allowAutoMerge] = await Promise.all([
     api.request(repositoryPath),
     api.request(`${repositoryPath}/pulls/${prNumber}`),
     repositoryAutoMerge(api),
   ]);
-  const link = extractMarkedJson(pr.body ?? '', LINK_MARKER);
+  const programLink = extractOptionalMarkedJson(pr.body ?? '', PROGRAM_LINK_MARKER);
+  const link = programLink ?? extractMarkedJson(pr.body ?? '', LINK_MARKER);
   if (!Number.isInteger(link.issueNumber) || link.issueNumber < 1) {
     throw new Error('LINKED_ISSUE_NUMBER_INVALID');
   }
@@ -1275,6 +2083,7 @@ async function loadSnapshotOnce(api, repositoryPath, prNumber, eventName, event)
     updatedAt: pr.updated_at,
     body: pr.body ?? '',
     user: normalizeUser(pr.user),
+    mergeCommitSha: pr.merge_commit_sha ?? null,
     changedFilesCount: pr.changed_files,
     base: { ref: pr.base?.ref, sha: pr.base?.sha, repoId: pr.base?.repo?.id },
     head: { ref: pr.head?.ref, sha: pr.head?.sha, repoId: pr.head?.repo?.id },
@@ -1307,6 +2116,7 @@ async function loadSnapshotOnce(api, repositoryPath, prNumber, eventName, event)
       defaultBranch: repo.default_branch,
       owner: normalizeUser(repo.owner),
       allowAutoMerge,
+      allowSquashMerge: repo.allow_squash_merge,
     },
     event: normalizeEvent(eventName, event),
     issue: {
@@ -1321,7 +2131,7 @@ async function loadSnapshotOnce(api, repositoryPath, prNumber, eventName, event)
     pr: normalizedPr,
     prTimeline: prTimelineRaw
       .filter((item) => CI_INVALIDATING_PR_EVENTS.has(item.event))
-      .map((item) => ({ event: item.event, createdAt: item.created_at }))
+      .map((item) => ({ event: item.event, createdAt: item.created_at, actor: normalizeUser(item.actor) }))
       .sort((a, b) => `${a.createdAt}:${a.event}`.localeCompare(`${b.createdAt}:${b.event}`)),
     relatedPullRequests: relatedRaw.map((related) => ({
       number: related.number,
@@ -1339,6 +2149,9 @@ async function loadSnapshotOnce(api, repositoryPath, prNumber, eventName, event)
     ),
     prComments: comments(prComments),
     ci,
+    program: programLink
+      ? await loadProgramContext(api, repositoryPath, issue, normalizedPr, programLink, observedAt)
+      : null,
   };
 }
 
@@ -1353,8 +2166,9 @@ export async function buildSnapshotFromGitHub({
   const api = createApi(token, apiUrl);
   const repositoryPath = `/repos/${repositoryFullName}`;
   const prNumber = await resolvePrNumber(api, repositoryPath, eventName, event);
-  const first = await loadSnapshotOnce(api, repositoryPath, prNumber, eventName, event);
-  const closing = await loadSnapshotOnce(api, repositoryPath, prNumber, eventName, event);
+  const observedAt = new Date().toISOString();
+  const first = await loadSnapshotOnce(api, repositoryPath, prNumber, eventName, event, observedAt);
+  const closing = await loadSnapshotOnce(api, repositoryPath, prNumber, eventName, event, observedAt);
   if (sha256Text(JSON.stringify(first)) !== sha256Text(JSON.stringify(closing))) {
     throw new Error('SNAPSHOT_CHANGED_DURING_READ');
   }
@@ -1368,6 +2182,7 @@ export async function buildSnapshotFromGitHub({
     updatedAt: finalPr.updated_at,
     body: finalPr.body ?? '',
     user: normalizeUser(finalPr.user),
+    mergeCommitSha: finalPr.merge_commit_sha ?? null,
     changedFilesCount: finalPr.changed_files,
     base: { ref: finalPr.base?.ref, sha: finalPr.base?.sha, repoId: finalPr.base?.repo?.id },
     head: { ref: finalPr.head?.ref, sha: finalPr.head?.sha, repoId: finalPr.head?.repo?.id },
@@ -1395,8 +2210,10 @@ export function formatResultLines(result) {
     CI_STATUS: result.ciStatus ?? 'UNKNOWN',
     REQUESTED_AUTOMATED_REPAIR_LIMIT: result.requestedRepairLimit ?? 0,
     HUMAN_CORRECTION_ROUND_COUNT: 'UNVERIFIED_FROM_READ_ONLY_GITHUB_METADATA',
-    LOCAL_CORRECTION_ROUND_COUNT: 'UNVERIFIED_FROM_READ_ONLY_GITHUB_METADATA',
-    PUBLISHED_CORRECTION_ROUND_COUNT: 'UNVERIFIED_FROM_READ_ONLY_GITHUB_METADATA',
+    LOCAL_CORRECTION_ROUND_COUNT:
+      result.localCorrectionRoundCount ?? 'UNVERIFIED_FROM_READ_ONLY_GITHUB_METADATA',
+    PUBLISHED_CORRECTION_ROUND_COUNT:
+      result.publishedCorrectionRoundCount ?? 'UNVERIFIED_FROM_READ_ONLY_GITHUB_METADATA',
     FAILURE_CLASS: result.result === 'PASS' ? 'NONE' : 'UNVERIFIED_FROM_READ_ONLY_GITHUB_METADATA',
     AUTO_FIX_ROUND_COUNT: result.autoFixRoundCount ?? 0,
     AUTO_FIX_WRITE: result.autoFixWrite,
