@@ -4,7 +4,12 @@ import test from 'node:test';
 
 import {
   POLICY,
+  assertStableSnapshots,
+  canonicalProgramIssueContract,
   evaluateControlSnapshot,
+  evaluateNamedSingleUseResource,
+  evaluateProgramChildSnapshot,
+  exactMainPushCi,
   extractMarkedJson,
   formatResultLines,
   isCanonicalHeadRef,
@@ -13,6 +18,9 @@ import {
   normalizeEvent,
   resolvePrNumber,
   sha256Text,
+  validateHistoricalProgramLifecycle,
+  validateHistoricalProgramReviews,
+  validateProgramRootApprovalTiming,
 } from './autonomous-control-gate-v2.mjs';
 
 const BASE_SHA = 'f6a55979dd37aba84e66d19c947b6be572c9973c';
@@ -192,6 +200,763 @@ function makeReconcileSnapshot(options = {}) {
   snapshot.event.command = 'CONTROL_PLANE_V2_RECONCILE';
   return snapshot;
 }
+
+const PROGRAM_ID = 'AI_VISION_V5_S1I_AUTONOMOUS_DELIVERY_V1';
+const PROGRAM_CONTRACT_SHA = 'c195546426c3804adaad2056b9f59a63decdec79ca88a20e7e47ee680f652f2a';
+const PROGRAM_ROOT_MERGE_SHA = '2'.repeat(40);
+const PROGRAM_HEAD_SHA = '3'.repeat(40);
+const PROGRAM_CHILD_2_MERGE_SHA = '5'.repeat(40);
+const PROGRAM_RESOURCE_NAME = 'P2_S1I_COMPAT_DDL_V1';
+
+function programActivationCiEvidence(headSha, { id = 8801, runAttempt = 1 } = {}) {
+  const runName = `CI push PR-none base-${headSha} head-${headSha}`;
+  return {
+    id,
+    runAttempt,
+    workflowId: POLICY.qualityWorkflowId,
+    workflowName: POLICY.qualityWorkflowName,
+    workflowPath: POLICY.qualityWorkflowPath,
+    workflowState: 'active',
+    runName,
+    runPath: POLICY.qualityWorkflowPath,
+    displayTitle: runName,
+    event: 'push',
+    headSha,
+    headBranch: 'main',
+    repositoryId: POLICY.repositoryId,
+    headRepositoryId: POLICY.repositoryId,
+    createdAt: '2026-09-05T00:06:00Z',
+    status: 'completed',
+    conclusion: 'success',
+    checkSuiteId: 8811,
+    checkSuite: {
+      id: 8811,
+      repositoryId: POLICY.repositoryId,
+      appId: POLICY.actionsApp.id,
+      appSlug: POLICY.actionsApp.slug,
+      headSha,
+      headBranch: 'main',
+      after: headSha,
+      status: 'completed',
+      conclusion: 'success',
+      pullRequests: [],
+    },
+    jobTotalCount: 1,
+    jobs: [{
+      id: 8821,
+      name: POLICY.qualityJobName,
+      status: 'completed',
+      conclusion: 'success',
+      headSha,
+      runId: id,
+      runAttempt,
+    }],
+  };
+}
+
+function programChild3Paths() {
+  return [
+    'app/api/p2/projects/[projectId]/asset-tasks/[assetTaskId]/artifacts/[artifactId]/revisions/[artifactRevisionId]/content/route.ts',
+    'app/api/p2/projects/[projectId]/asset-tasks/[assetTaskId]/execute-internal-test/route.ts',
+    'prisma/migrations/20260905010101_p2_internal_attempt_artifact_lineage/migration.sql',
+    'prisma/schema.prisma',
+    'src/http/p2-asset-task-api.ts',
+    'src/tasks/asset-task.ts',
+    'src/tasks/internal-asset-task-execution.ts',
+    'tests/integration/p2-s1i-internal-attempt-artifact-lineage.test.ts',
+    'tests/unit/p2-internal-attempt-artifact-api.test.ts',
+  ];
+}
+
+function bodyWithProgramBinding(binding, canonicalText = '# Frozen program contract\n') {
+  const complete = { ...binding, issueContractSha256: sha256Text(canonicalText) };
+  return {
+    binding: complete,
+    body: `${marker('PROGRAM_CHILD_BINDING_JSON', complete)}\n${canonicalText}`,
+  };
+}
+
+function rootProgramBinding() {
+  return {
+    activatedAt: '2026-09-04T00:00:00Z',
+    authorizedBaseSha: BASE_SHA,
+    authorizedHeadRef: 'codex/program-bootstrap-root',
+    bindingType: 'PROGRAM_ROOT',
+    childOrdinal: 1,
+    contractSha256: PROGRAM_CONTRACT_SHA,
+    delegationActivationSha: 'PENDING_PR1_MERGE_AND_EXACT_MAIN_CI_SUCCESS',
+    exactAllowedPaths: [
+      '.github/scripts/autonomous-control-gate-v2.mjs',
+      '.github/scripts/autonomous-control-gate-v2.test.mjs',
+      'AGENTS.md',
+      'docs/governance/GITHUB_AUTONOMOUS_DEVELOPMENT_CONTROL_PLANE_V2.md',
+      'docs/governance/V5_P2_ENTRY_GOVERNANCE.md',
+    ],
+    expectedBaseSha: BASE_SHA,
+    expiresAt: '2026-10-04T00:00:00Z',
+    grantId: `grant-${'1'.repeat(32)}`,
+    issueContractSha256: '0'.repeat(64),
+    maxPrCount: 3,
+    nonce: '1'.repeat(32),
+    permittedActions: [
+      'issue', 'branch', 'isolated_worktree', 'local_patch', 'isolated_validation',
+      'normal_commit', 'normal_push', 'draft_pr', 'independent_ai_review', 'ready',
+      'safe_squash_merge',
+    ],
+    permittedRiskClasses: ['GREEN', 'YELLOW_BOUNDED'],
+    previousMergeSha: BASE_SHA,
+    programId: PROGRAM_ID,
+    prohibitedActions: [
+      'force_push', 'force_with_lease', 'protection_bypass', 'security_check_disable',
+      'production_deploy', 'shared_or_persistent_database', 'real_provider',
+      'credential_or_permission_change', 'paid_action', 'destructive_operation',
+    ],
+    remainingChildIssueCount: 2,
+    repositoryId: POLICY.repositoryId,
+    riskClass: 'YELLOW_BOUNDED',
+    schema: 'autonomous-delivery-program-v1',
+  };
+}
+
+function childProgramBinding(overrides = {}) {
+  return {
+    activatedAt: '2026-09-04T01:00:00Z',
+    authorizedBaseSha: PROGRAM_ROOT_MERGE_SHA,
+    authorizedHeadRef: 'codex/program-child-2',
+    childOrdinal: 2,
+    contractSha256: 'a'.repeat(64),
+    delegationActivationSha: PROGRAM_ROOT_MERGE_SHA,
+    exactAllowedPaths: [
+      'AGENTS.md',
+      'docs/governance/GITHUB_AUTONOMOUS_DEVELOPMENT_CONTROL_PLANE_V2.md',
+      'docs/governance/V5_P2_ENTRY_GOVERNANCE.md',
+    ],
+    expectedBaseSha: PROGRAM_ROOT_MERGE_SHA,
+    expiresAt: '2026-10-03T00:00:00Z',
+    grantId: `grant-${'2'.repeat(32)}`,
+    issueContractSha256: '0'.repeat(64),
+    localCorrectionLimit: 3,
+    nonce: '2'.repeat(32),
+    orchestratorSessionId: `orchestrator-${'o'.repeat(16)}`,
+    previousMergeSha: PROGRAM_ROOT_MERGE_SHA,
+    programId: PROGRAM_ID,
+    publishedCorrectionLimit: 2,
+    repositoryId: POLICY.repositoryId,
+    requiredChecks: [POLICY.qualityJobName],
+    resources: [],
+    riskClass: 'YELLOW_BOUNDED',
+    rootIssueNumber: 55,
+    schema: 'autonomous-delivery-child-v1',
+    taskClass: 'CONTROL_PLANE_CHANGE',
+    ...overrides,
+  };
+}
+
+function syncProgramCi(snapshot) {
+  const runName = `CI pull_request PR-${snapshot.pr.number} ` +
+    `base-${snapshot.pr.base.sha} head-${snapshot.pr.head.sha}`;
+  Object.assign(snapshot.event, {
+    workflowId: POLICY.qualityWorkflowId,
+    workflowPath: POLICY.qualityWorkflowPath,
+    workflowEvent: 'pull_request',
+    runName,
+    displayTitle: runName,
+    headSha: snapshot.pr.head.sha,
+    headBranch: snapshot.pr.head.ref,
+    runAttempt: snapshot.event.type === 'workflow_run' ? 1 : null,
+  });
+  Object.assign(snapshot.ci, {
+    runName,
+    displayTitle: runName,
+    headSha: snapshot.pr.head.sha,
+    headBranch: snapshot.pr.head.ref,
+    createdAt: '2026-09-05T00:01:00Z',
+  });
+  Object.assign(snapshot.ci.checkSuite, {
+    headSha: snapshot.pr.head.sha,
+    headBranch: snapshot.pr.head.ref,
+    after: snapshot.pr.head.sha,
+  });
+  Object.assign(snapshot.ci.jobs[0], { headSha: snapshot.pr.head.sha });
+}
+
+function makeProgramSnapshot({
+  childOverrides = {},
+  resources = [{
+    action: 'REGISTER',
+    contractSha256: 'a'.repeat(64),
+    name: PROGRAM_RESOURCE_NAME,
+  }],
+} = {}) {
+  const snapshot = makeSnapshot({
+    taskClass: 'CONTROL_PLANE_CHANGE',
+    allowedPaths: ['docs/governance/V5_P2_ENTRY_GOVERNANCE.md'],
+  });
+  const root = bodyWithProgramBinding(rootProgramBinding(), '# Program root contract\n');
+  const child = bodyWithProgramBinding(
+    childProgramBinding({ ...childOverrides, resources }),
+    '# Program child contract\n',
+  );
+  snapshot.repository.allowSquashMerge = true;
+  snapshot.issue = {
+    number: 56,
+    state: 'open',
+    body: child.body,
+    user: owner(),
+    isPullRequest: false,
+  };
+  snapshot.pr = {
+    number: 57,
+    state: 'open',
+    draft: true,
+    merged: false,
+    mergeable: true,
+    createdAt: '2026-09-05T00:00:00Z',
+    body: '',
+    user: owner(),
+    base: { ref: 'main', sha: PROGRAM_ROOT_MERGE_SHA, repoId: POLICY.repositoryId },
+    head: {
+      ref: child.binding.authorizedHeadRef,
+      sha: PROGRAM_HEAD_SHA,
+      repoId: POLICY.repositoryId,
+    },
+  };
+  const link = {
+    authorizedBaseSha: child.binding.authorizedBaseSha,
+    authorizedHeadRef: child.binding.authorizedHeadRef,
+    childOrdinal: child.binding.childOrdinal,
+    ciRerunCount: 0,
+    delegationActivationSha: child.binding.delegationActivationSha,
+    grantId: child.binding.grantId,
+    issueBodyReadbackSha256: sha256Text(child.body),
+    issueContractSha256: child.binding.issueContractSha256,
+    issueNumber: snapshot.issue.number,
+    localCorrectionCount: 0,
+    nonce: child.binding.nonce,
+    programId: PROGRAM_ID,
+    publishedCorrectionCount: 0,
+    processRetryCount: 0,
+    schema: 'autonomous-delivery-child-v1',
+  };
+  snapshot.pr.body = marker('PROGRAM_CHILD_LINK_JSON', link);
+  snapshot.issueComments = [];
+  snapshot.issueTimeline = [];
+  snapshot.relatedPullRequests = [{ number: snapshot.pr.number }];
+  snapshot.prTimeline = [];
+  snapshot.prComments = [{
+    id: 9901,
+    body: marker('PROGRAM_INDEPENDENT_REVIEW_JSON', {
+      findings: [],
+      headSha: snapshot.pr.head.sha,
+      prNumber: snapshot.pr.number,
+      programId: PROGRAM_ID,
+      reviewedAt: '2026-09-05T00:02:00Z',
+      reviewerSessionId: `reviewer-${'r'.repeat(16)}`,
+      schema: 'autonomous-delivery-review-v1',
+      verdict: 'PASS',
+    }),
+    user: owner(),
+    authorAssociation: 'OWNER',
+    createdAt: '2026-09-05T00:02:00Z',
+    updatedAt: '2026-09-05T00:02:00Z',
+  }];
+  snapshot.changedFiles = child.binding.exactAllowedPaths.map((filename) => ({
+    filename,
+    previousFilename: null,
+    status: 'modified',
+    mode: '100644',
+    previousMode: '100644',
+  }));
+  snapshot.program = {
+    binding: child.binding,
+    link,
+    now: '2026-09-05T00:03:00Z',
+    mainSha: PROGRAM_ROOT_MERGE_SHA,
+    root: {
+      issue: { number: 55, state: 'open', body: root.body, user: owner() },
+      binding: root.binding,
+      pr: {
+        number: 54,
+        merged: true,
+        mergeCommitSha: PROGRAM_ROOT_MERGE_SHA,
+        base: { ref: 'main', sha: BASE_SHA, repoId: POLICY.repositoryId },
+        head: { ref: root.binding.authorizedHeadRef, sha: '4'.repeat(40), repoId: POLICY.repositoryId },
+      },
+      mergeParentValid: true,
+      legacyApprovalValid: true,
+      diffValid: true,
+      activationCi: programActivationCiEvidence(PROGRAM_ROOT_MERGE_SHA),
+    },
+    bindings: [],
+  };
+  snapshot.program.bindings = [
+    {
+      binding: root.binding,
+      issueNumber: 55,
+      pr: snapshot.program.root.pr,
+      mergeParentValid: true,
+    },
+    {
+      binding: child.binding,
+      issueNumber: 56,
+      pr: { ...snapshot.pr, mergeCommitSha: null },
+      mergeParentValid: false,
+    },
+  ];
+  syncProgramCi(snapshot);
+  return snapshot;
+}
+
+function updateProgramLink(snapshot, mutate) {
+  mutate(snapshot.program.link);
+  snapshot.pr.body = marker('PROGRAM_CHILD_LINK_JSON', snapshot.program.link);
+}
+
+function makeProgramOrdinal3Snapshot() {
+  const resourceName = PROGRAM_RESOURCE_NAME;
+  const snapshot = makeProgramSnapshot({
+    childOverrides: {
+      authorizedBaseSha: PROGRAM_CHILD_2_MERGE_SHA,
+      authorizedHeadRef: 'codex/program-child-3',
+      childOrdinal: 3,
+      exactAllowedPaths: programChild3Paths(),
+      expectedBaseSha: PROGRAM_CHILD_2_MERGE_SHA,
+      grantId: `grant-${'3'.repeat(32)}`,
+      nonce: '3'.repeat(32),
+      previousMergeSha: PROGRAM_CHILD_2_MERGE_SHA,
+      taskClass: 'P2_IMPLEMENTATION',
+    },
+    resources: [{
+      action: 'CONSUME',
+      name: resourceName,
+      registrationMergeSha: PROGRAM_CHILD_2_MERGE_SHA,
+    }],
+  });
+  snapshot.pr.base.sha = PROGRAM_CHILD_2_MERGE_SHA;
+  snapshot.program.mainSha = PROGRAM_CHILD_2_MERGE_SHA;
+  const registrationBinding = childProgramBinding({
+    resources: [{ action: 'REGISTER', contractSha256: 'a'.repeat(64), name: resourceName }],
+  });
+  snapshot.program.bindings.splice(1, 0, {
+    binding: registrationBinding,
+    issueNumber: 56,
+    pr: {
+      number: 57,
+      state: 'closed',
+      merged: true,
+      mergeCommitSha: PROGRAM_CHILD_2_MERGE_SHA,
+      base: { ref: 'main', sha: PROGRAM_ROOT_MERGE_SHA, repoId: POLICY.repositoryId },
+      head: { ref: registrationBinding.authorizedHeadRef, sha: '6'.repeat(40), repoId: POLICY.repositoryId },
+    },
+    mergeParentValid: true,
+    exactConsumptionValid: true,
+    evidenceDigest: 'd'.repeat(64),
+    activationCi: programActivationCiEvidence(
+      PROGRAM_CHILD_2_MERGE_SHA,
+      { id: 8901 },
+    ),
+  });
+  snapshot.issue.number = 58;
+  snapshot.pr.number = 59;
+  snapshot.program.link.issueNumber = 58;
+  snapshot.program.bindings.at(-1).issueNumber = 58;
+  snapshot.program.bindings.at(-1).pr = { ...snapshot.pr, mergeCommitSha: null };
+  snapshot.prComments[0].id = 9902;
+  snapshot.prComments[0].body = marker('PROGRAM_INDEPENDENT_REVIEW_JSON', {
+    findings: [],
+    headSha: snapshot.pr.head.sha,
+    prNumber: snapshot.pr.number,
+    programId: PROGRAM_ID,
+    reviewedAt: '2026-09-05T00:02:00Z',
+    reviewerSessionId: `reviewer-${'a'.repeat(16)}`,
+    schema: 'autonomous-delivery-review-v1',
+    verdict: 'PASS',
+  });
+  snapshot.prComments.push({
+    ...snapshot.prComments[0],
+    id: 9903,
+    body: marker('PROGRAM_INDEPENDENT_REVIEW_JSON', {
+      findings: [],
+      headSha: snapshot.pr.head.sha,
+      prNumber: snapshot.pr.number,
+      programId: PROGRAM_ID,
+      reviewedAt: '2026-09-05T00:02:30Z',
+      reviewerSessionId: `reviewer-${'b'.repeat(16)}`,
+      schema: 'autonomous-delivery-review-v1',
+      verdict: 'PASS',
+    }),
+    createdAt: '2026-09-05T00:02:30Z',
+    updatedAt: '2026-09-05T00:02:30Z',
+  });
+  const migrationPath = snapshot.program.binding.exactAllowedPaths.find((path) =>
+    path.startsWith('prisma/migrations/')
+  );
+  snapshot.changedFiles = snapshot.program.binding.exactAllowedPaths.map((filename) => ({
+    filename,
+    previousFilename: null,
+    status: filename === migrationPath ? 'added' : 'modified',
+    mode: '100644',
+    previousMode: filename === migrationPath ? null : '100644',
+  }));
+  snapshot.relatedPullRequests = [{ number: snapshot.pr.number }];
+  snapshot.program.link.issueNumber = snapshot.issue.number;
+  snapshot.program.link.issueBodyReadbackSha256 = sha256Text(snapshot.issue.body);
+  snapshot.pr.body = marker('PROGRAM_CHILD_LINK_JSON', snapshot.program.link);
+  snapshot.program.bindings.at(-1).pr = { ...snapshot.pr, mergeCommitSha: null };
+  syncProgramCi(snapshot);
+  return snapshot;
+}
+
+test('program child exact-head evidence is machine-consumed for Ready and merge gates', () => {
+  const draft = makeProgramSnapshot();
+  const readyResult = evaluateProgramChildSnapshot(draft);
+  assert.equal(readyResult.result, 'PASS');
+  assert.equal(readyResult.controlState, 'PROGRAM_DELEGATION_ACTIVE');
+  assert.equal(readyResult.decision, 'PROGRAM_CHILD_SAFE_TO_READY');
+  assert.equal(readyResult.autoMerge, 'ONE_SAFE_SQUASH_BY_ORCHESTRATOR_ONLY');
+
+  const ready = makeProgramSnapshot();
+  ready.pr.draft = false;
+  ready.event.type = 'issue_comment';
+  ready.event.actor = owner();
+  ready.event.authorAssociation = 'OWNER';
+  ready.event.command = 'CONTROL_PLANE_V2_RECONCILE';
+  ready.prTimeline = [{
+    event: 'ready_for_review',
+    createdAt: '2026-09-05T00:03:30Z',
+    actor: owner(),
+  }];
+  syncProgramCi(ready);
+  const mergeResult = evaluateControlSnapshot(ready);
+  assert.equal(mergeResult.result, 'PASS');
+  assert.equal(mergeResult.decision, 'PROGRAM_CHILD_SAFE_TO_SQUASH_MERGE');
+});
+
+test('ordinal 3 requires two distinct exact-Head reviewers and the frozen nine paths', () => {
+  const snapshot = makeProgramOrdinal3Snapshot();
+  const result = evaluateProgramChildSnapshot(snapshot);
+  assert.equal(result.result, 'PASS');
+  assert.equal(result.reviewSessionIds.length, 2);
+
+  snapshot.prComments.pop();
+  assert.match(holdReason(snapshot), /PROGRAM_CURRENT_REVIEW_COUNT_1_EXPECTED_2/u);
+
+  const widened = makeProgramSnapshot({
+    childOverrides: { exactAllowedPaths: ['AGENTS.md'] },
+  });
+  assert.match(holdReason(widened), /PROGRAM_CHILD_2_ALLOWLIST_NOT_FROZEN/u);
+});
+
+test('program root is frozen to Issue 55 and the exact PR1 five-path allowlist', () => {
+  const wrongIssue = makeProgramSnapshot();
+  wrongIssue.program.binding.rootIssueNumber = 999;
+  assert.match(holdReason(wrongIssue), /PROGRAM_CHILD_BINDING_SHAPE_INVALID/u);
+
+  const wrongPaths = makeProgramSnapshot();
+  const root = bodyWithProgramBinding({
+    ...wrongPaths.program.root.binding,
+    exactAllowedPaths: ['docs/governance/GITHUB_AUTONOMOUS_DEVELOPMENT_CONTROL_PLANE_V2.md'],
+  }, '# Program root contract\n');
+  wrongPaths.program.root.binding = root.binding;
+  wrongPaths.program.root.issue.body = root.body;
+  assert.match(holdReason(wrongPaths), /PROGRAM_ROOT_ALLOWLIST_INVALID/u);
+});
+
+test('program freezes the S1I resource name and registration contract binding', () => {
+  const wrongName = makeProgramSnapshot();
+  wrongName.program.binding.resources[0].name = 'PROGRAM_TEST_RESOURCE';
+  assert.match(holdReason(wrongName), /PROGRAM_CHILD_RESOURCE_STAGE_INVALID/u);
+
+  const wrongContract = makeProgramSnapshot();
+  wrongContract.program.binding.resources[0].contractSha256 = 'b'.repeat(64);
+  assert.match(holdReason(wrongContract), /PROGRAM_CHILD_RESOURCE_STAGE_INVALID/u);
+});
+
+test('program merge gate requires stable mergeable=true', () => {
+  for (const mergeable of [false, null]) {
+    const snapshot = makeProgramSnapshot();
+    snapshot.pr.mergeable = mergeable;
+    assert.match(holdReason(snapshot), /PROGRAM_PR_IDENTITY_OR_STATE_INVALID/u);
+  }
+});
+
+test('program permanently expires a child after pre-merge PR or Issue termination', () => {
+  const prReopened = makeProgramSnapshot();
+  prReopened.prTimeline = [
+    { event: 'closed', createdAt: '2026-09-05T00:00:30Z', actor: owner() },
+    { event: 'reopened', createdAt: '2026-09-05T00:00:31Z', actor: owner() },
+  ];
+  assert.match(holdReason(prReopened), /PROGRAM_PERMANENT_HISTORY_EXPIRED:closed/u);
+
+  const issueReopened = makeProgramSnapshot();
+  issueReopened.issueTimeline = [
+    { event: 'closed', createdAt: '2026-09-05T00:00:30Z', actor: owner() },
+    { event: 'reopened', createdAt: '2026-09-05T00:00:31Z', actor: owner() },
+  ];
+  assert.match(holdReason(issueReopened), /PROGRAM_PERMANENT_HISTORY_EXPIRED:closed/u);
+});
+
+test('program permanently rejects branch deletion, force-push, and base-history rewrites', () => {
+  for (const event of [
+    'head_ref_deleted',
+    'head_ref_restored',
+    'head_ref_force_pushed',
+    'base_ref_changed',
+    'base_ref_deleted',
+    'base_ref_force_pushed',
+    'automatic_base_change_succeeded',
+  ]) {
+    const snapshot = makeProgramSnapshot();
+    snapshot.prTimeline = [{ event, createdAt: '2026-09-05T00:00:30Z', actor: owner() }];
+    assert.match(holdReason(snapshot), new RegExp(`PROGRAM_PERMANENT_HISTORY_EXPIRED:${event}`, 'u'));
+  }
+});
+
+test('ordinal 3 revalidates exact historical child consumption and main-push CI', () => {
+  const wrongBase = makeProgramOrdinal3Snapshot();
+  wrongBase.program.bindings[1].pr.base.sha = '8'.repeat(40);
+  assert.match(holdReason(wrongBase), /PROGRAM_PRIOR_CHILD_NOT_EXACTLY_CONSUMED/u);
+
+  const invalidEvidence = makeProgramOrdinal3Snapshot();
+  invalidEvidence.program.bindings[1].exactConsumptionValid = false;
+  assert.match(holdReason(invalidEvidence), /PROGRAM_PRIOR_CHILD_NOT_EXACTLY_CONSUMED/u);
+
+  const wrongActivation = makeProgramOrdinal3Snapshot();
+  wrongActivation.program.bindings[1].activationCi.headSha = '9'.repeat(40);
+  assert.match(holdReason(wrongActivation), /PROGRAM_PRIOR_CHILD_NOT_EXACTLY_CONSUMED/u);
+
+  const missingDigest = makeProgramOrdinal3Snapshot();
+  delete missingDigest.program.bindings[1].evidenceDigest;
+  assert.match(holdReason(missingDigest), /PROGRAM_PRIOR_CHILD_NOT_EXACTLY_CONSUMED/u);
+});
+
+test('historical lifecycle permits merge-caused close but rejects pre-merge termination', () => {
+  const historicalPr = { mergedAt: '2026-09-05T00:05:00Z' };
+  const ready = { event: 'ready_for_review', createdAt: '2026-09-05T00:03:00Z', actor: owner() };
+  assert.doesNotThrow(() => validateHistoricalProgramLifecycle(
+    historicalPr,
+    [ready, { event: 'closed', createdAt: '2026-09-05T00:05:00Z', actor: owner() }],
+    [{ event: 'closed', createdAt: '2026-09-05T00:05:00Z', actor: owner() }],
+  ));
+  assert.throws(
+    () => validateHistoricalProgramLifecycle(
+      historicalPr,
+      [ready, { event: 'closed', createdAt: '2026-09-05T00:04:59Z', actor: owner() }],
+      [],
+    ),
+    /PROGRAM_PRIOR_CHILD_PERMANENT_HISTORY_INVALID:closed/u,
+  );
+});
+
+test('historical independent reviews must exist before the exact merge', () => {
+  const pr = { mergedAt: '2026-09-05T00:05:00Z' };
+  assert.doesNotThrow(() => validateHistoricalProgramReviews(
+    [{ commentCreatedAt: '2026-09-05T00:04:59Z', reviewedAt: '2026-09-05T00:04:58Z' }],
+    pr,
+  ));
+  assert.throws(
+    () => validateHistoricalProgramReviews(
+      [{ commentCreatedAt: '2026-09-05T00:06:00Z', reviewedAt: '2026-09-05T00:05:59Z' }],
+      pr,
+    ),
+    /PROGRAM_PRIOR_CHILD_REVIEW_NOT_PREMERGE/u,
+  );
+  assert.throws(
+    () => validateHistoricalProgramReviews(
+      [{ commentCreatedAt: '2026-09-05T00:04:58Z', reviewedAt: '2026-09-05T00:04:59Z' }],
+      pr,
+    ),
+    /PROGRAM_PRIOR_CHILD_REVIEW_NOT_PREMERGE/u,
+  );
+});
+
+test('root approval must be immutable evidence created before merge and activation CI', () => {
+  const rootIssue = { number: 55, user: owner(), pull_request: null };
+  const rootPr = { mergedAt: '2026-09-05T00:05:00Z' };
+  const activationCi = { createdAt: '2026-09-05T00:06:00Z' };
+  assert.doesNotThrow(() => validateProgramRootApprovalTiming(
+    rootIssue,
+    { createdAt: '2026-09-05T00:04:00Z' },
+    rootPr,
+    activationCi,
+  ));
+  assert.throws(
+    () => validateProgramRootApprovalTiming(
+      rootIssue,
+      { createdAt: '2026-09-05T00:05:01Z' },
+      rootPr,
+      activationCi,
+    ),
+    /PROGRAM_ROOT_ISSUE_OR_APPROVAL_TIMING_INVALID/u,
+  );
+});
+
+test('program delegation fails closed before exact bootstrap activation and exact main-push CI', () => {
+  for (const mutate of [
+    (snapshot) => { snapshot.program.root.pr.merged = false; },
+    (snapshot) => { snapshot.program.root.mergeParentValid = false; },
+    (snapshot) => { snapshot.program.root.legacyApprovalValid = false; },
+    (snapshot) => { snapshot.program.root.diffValid = false; },
+    (snapshot) => { snapshot.program.root.activationCi.conclusion = 'failure'; },
+    (snapshot) => { snapshot.program.root.activationCi.headSha = '9'.repeat(40); },
+    (snapshot) => { snapshot.program.root.activationCi.runAttempt = 2; },
+    (snapshot) => { snapshot.program.root.activationCi.checkSuite.status = 'queued'; },
+    (snapshot) => { snapshot.program.root.activationCi.jobs[0].id = null; },
+  ]) {
+    const snapshot = makeProgramSnapshot();
+    mutate(snapshot);
+    assert.match(holdReason(snapshot), /PROGRAM_DELEGATION_NOT_EXACTLY_ACTIVATED/u);
+  }
+});
+
+test('program child rejects base drift, expiry, budget exhaustion, and stale independent review', () => {
+  const drift = makeProgramSnapshot();
+  drift.program.mainSha = '8'.repeat(40);
+  assert.match(holdReason(drift), /PROGRAM_MAIN_BASE_DRIFT/u);
+
+  const expired = makeProgramSnapshot();
+  expired.program.now = '2026-10-03T00:00:00Z';
+  assert.match(holdReason(expired), /PROGRAM_DELEGATION_EXPIRED_OR_NOT_YET_ACTIVE/u);
+
+  const budget = makeProgramSnapshot();
+  updateProgramLink(budget, (link) => { link.publishedCorrectionCount = 3; });
+  assert.match(holdReason(budget), /PROGRAM_CHILD_LINK_BINDING_INVALID/u);
+
+  const retryBudget = makeProgramSnapshot();
+  updateProgramLink(retryBudget, (link) => { link.processRetryCount = 3; });
+  assert.match(holdReason(retryBudget), /PROGRAM_CHILD_LINK_BINDING_INVALID/u);
+
+  const staleReview = makeProgramSnapshot();
+  staleReview.pr.head.sha = '7'.repeat(40);
+  syncProgramCi(staleReview);
+  assert.match(holdReason(staleReview), /PROGRAM_CURRENT_REVIEW_COUNT_0/u);
+});
+
+test('program child rejects grant, nonce, ordinal, and previous-base replay', () => {
+  const duplicateGrant = makeProgramSnapshot();
+  duplicateGrant.program.bindings.push({
+    ...duplicateGrant.program.bindings[1],
+    issueNumber: 99,
+    binding: { ...duplicateGrant.program.binding, childOrdinal: 3 },
+  });
+  assert.match(holdReason(duplicateGrant), /PROGRAM_GRANT_ID_REPLAY/u);
+
+  const ordinalReplay = makeProgramSnapshot();
+  ordinalReplay.program.bindings.push({
+    ...ordinalReplay.program.bindings[1],
+    issueNumber: 99,
+    binding: {
+      ...ordinalReplay.program.binding,
+      grantId: `grant-${'9'.repeat(32)}`,
+      nonce: '9'.repeat(32),
+    },
+  });
+  assert.match(holdReason(ordinalReplay), /PROGRAM_ORDINAL_REPLAY/u);
+
+  const skipped = makeProgramSnapshot({
+    childOverrides: {
+      childOrdinal: 3,
+      exactAllowedPaths: programChild3Paths(),
+      taskClass: 'P2_IMPLEMENTATION',
+    },
+    resources: [{
+      action: 'CONSUME',
+      name: PROGRAM_RESOURCE_NAME,
+      registrationMergeSha: '6'.repeat(40),
+    }],
+  });
+  assert.match(holdReason(skipped), /PROGRAM_ORDINAL_SEQUENCE_INVALID/u);
+
+  const staleBase = makeProgramSnapshot({
+    childOverrides: { previousMergeSha: '8'.repeat(40), expectedBaseSha: '8'.repeat(40), authorizedBaseSha: '8'.repeat(40) },
+  });
+  staleBase.pr.base.sha = '8'.repeat(40);
+  staleBase.program.mainSha = '8'.repeat(40);
+  syncProgramCi(staleBase);
+  assert.match(holdReason(staleBase), /PROGRAM_CHILD_PREVIOUS_MERGE_BINDING_INVALID/u);
+});
+
+test('generic named resource lifecycle registers, binds, consumes once, and rejects replay', () => {
+  const resource = {
+    action: 'REGISTER',
+    contractSha256: 'a'.repeat(64),
+    name: 'FUTURE_RESOURCE_X',
+  };
+  const currentRegister = childProgramBinding({ resources: [resource] });
+  assert.equal(
+    evaluateNamedSingleUseResource({ bindings: [], currentBinding: currentRegister }),
+    'REGISTER_ON_CURRENT_MERGE',
+  );
+
+  const registrationMergeSha = '6'.repeat(40);
+  const registered = {
+    binding: currentRegister,
+    pr: { merged: true, mergeCommitSha: registrationMergeSha },
+    mergeParentValid: true,
+    issueState: 'closed',
+  };
+  const consume = childProgramBinding({
+    childOrdinal: 3,
+    grantId: `grant-${'3'.repeat(32)}`,
+    nonce: '3'.repeat(32),
+    resources: [{ action: 'CONSUME', name: resource.name, registrationMergeSha }],
+  });
+  assert.equal(
+    evaluateNamedSingleUseResource({ bindings: [registered], currentBinding: consume }),
+    'CONSUME_ON_CURRENT_MERGE',
+  );
+  assert.equal(
+    evaluateNamedSingleUseResource({ bindings: [registered], currentBinding: consume }),
+    'CONSUME_ON_CURRENT_MERGE',
+    'a merge-autoclosed registration remains AVAILABLE and repeated evaluation is idempotent',
+  );
+
+  assert.throws(
+    () => evaluateNamedSingleUseResource({
+      bindings: [{ ...registered, pr: { merged: false, mergeCommitSha: null }, issueState: 'closed' }],
+      currentBinding: consume,
+    }),
+    /PROGRAM_RESOURCE_NOT_AVAILABLE/u,
+  );
+
+  assert.throws(
+    () => evaluateNamedSingleUseResource({
+      bindings: [registered, {
+        binding: consume,
+        pr: { merged: true, mergeCommitSha: '7'.repeat(40) },
+        mergeParentValid: true,
+      }],
+      currentBinding: {
+        ...consume,
+        childOrdinal: 4,
+        grantId: `grant-${'4'.repeat(32)}`,
+        nonce: '4'.repeat(32),
+      },
+    }),
+    /PROGRAM_RESOURCE_NOT_AVAILABLE/u,
+  );
+  assert.throws(
+    () => evaluateNamedSingleUseResource({ bindings: [registered], currentBinding: currentRegister }),
+    /PROGRAM_RESOURCE_REPLAYED_REGISTRATION/u,
+  );
+});
+
+test('program Issue canonicalization is deterministic and rejects CRLF, duplicate blocks, and bad final LF', () => {
+  const frozen = bodyWithProgramBinding(childProgramBinding(), '# Canonical\n');
+  assert.equal(canonicalProgramIssueContract(frozen.body), '# Canonical\n');
+  assert.throws(
+    () => canonicalProgramIssueContract(frozen.body.replaceAll('\n', '\r\n')),
+    /PROGRAM_ISSUE_BODY_NOT_CANONICAL_UTF8_LF/u,
+  );
+  assert.throws(
+    () => canonicalProgramIssueContract(`${frozen.body}${marker('PROGRAM_CHILD_BINDING_JSON', frozen.binding)}\n`),
+    /PROGRAM_BINDING_BLOCK_COUNT_INVALID/u,
+  );
+  assert.throws(
+    () => canonicalProgramIssueContract(frozen.body.slice(0, -1)),
+    /PROGRAM_ISSUE_BODY_FINAL_LF_INVALID/u,
+  );
+});
 
 function holdReason(snapshot) {
   const result = evaluateControlSnapshot(snapshot);
@@ -1388,6 +2153,100 @@ function ciApiFixture({
   };
 }
 
+function mainPushCiApiFixture() {
+  const evidence = programActivationCiEvidence(HEAD_SHA);
+  const run = {
+    id: evidence.id,
+    run_attempt: evidence.runAttempt,
+    workflow_id: evidence.workflowId,
+    name: evidence.runName,
+    display_title: evidence.displayTitle,
+    path: evidence.runPath,
+    event: evidence.event,
+    head_sha: evidence.headSha,
+    head_branch: evidence.headBranch,
+    repository: { id: evidence.repositoryId },
+    head_repository: { id: evidence.headRepositoryId },
+    created_at: evidence.createdAt,
+    status: evidence.status,
+    conclusion: evidence.conclusion,
+    check_suite_id: evidence.checkSuiteId,
+  };
+  return {
+    async request(path) {
+      if (path.includes('/actions/workflows/ci.yml/runs')) {
+        return { data: { total_count: 1, workflow_runs: [run] } };
+      }
+      if (path.endsWith(`/actions/workflows/${POLICY.qualityWorkflowId}`)) {
+        return { data: {
+          id: POLICY.qualityWorkflowId,
+          name: POLICY.qualityWorkflowName,
+          path: POLICY.qualityWorkflowPath,
+          state: 'active',
+        } };
+      }
+      if (path.includes(`/actions/runs/${evidence.id}/jobs`)) {
+        return { data: { total_count: 1, jobs: [{
+          id: evidence.jobs[0].id,
+          name: evidence.jobs[0].name,
+          status: evidence.jobs[0].status,
+          conclusion: evidence.jobs[0].conclusion,
+          head_sha: evidence.jobs[0].headSha,
+          run_id: evidence.jobs[0].runId,
+          run_attempt: evidence.jobs[0].runAttempt,
+        }] } };
+      }
+      if (path.includes(`/check-suites/${evidence.checkSuiteId}`)) {
+        return { data: {
+          id: evidence.checkSuite.id,
+          repository: { id: evidence.checkSuite.repositoryId },
+          app: { id: evidence.checkSuite.appId, slug: evidence.checkSuite.appSlug },
+          head_sha: evidence.checkSuite.headSha,
+          head_branch: evidence.checkSuite.headBranch,
+          after: evidence.checkSuite.after,
+          status: evidence.checkSuite.status,
+          conclusion: evidence.checkSuite.conclusion,
+          pull_requests: [],
+        } };
+      }
+      throw new Error(`unexpected path ${path}`);
+    },
+  };
+}
+
+test('main-push CI retains exact run-attempt, Check Suite, and job evidence', async () => {
+  const evidence = await exactMainPushCi(mainPushCiApiFixture(), '/repos/example/repo', HEAD_SHA);
+  assert.equal(evidence.id, 8801);
+  assert.equal(evidence.runAttempt, 1);
+  assert.deepEqual(evidence.checkSuite, programActivationCiEvidence(HEAD_SHA).checkSuite);
+  assert.deepEqual(evidence.jobs, programActivationCiEvidence(HEAD_SHA).jobs);
+});
+
+test('program snapshot stability includes same-run attempt, Check Suite, and job changes', () => {
+  const first = makeProgramSnapshot();
+  assert.doesNotThrow(() => assertStableSnapshots(first, structuredClone(first)));
+
+  for (const mutate of [
+    (snapshot) => {
+      snapshot.program.root.activationCi.runAttempt = 2;
+      snapshot.program.root.activationCi.jobs[0].runAttempt = 2;
+    },
+    (snapshot) => {
+      snapshot.program.root.activationCi.checkSuiteId = 8812;
+      snapshot.program.root.activationCi.checkSuite.id = 8812;
+    },
+    (snapshot) => { snapshot.program.root.activationCi.jobs[0].id = 8822; },
+  ]) {
+    const closing = structuredClone(first);
+    mutate(closing);
+    assert.equal(closing.program.root.activationCi.id, first.program.root.activationCi.id);
+    assert.throws(
+      () => assertStableSnapshots(first, closing),
+      /SNAPSHOT_CHANGED_DURING_READ/u,
+    );
+  }
+});
+
 test('latest CI accepts the observed empty Check Suite PR list and ignores all-zero suite.before', async () => {
   const ci = await latestCi(ciApiFixture(), '/repos/example/repo', {
     number: 19,
@@ -1571,10 +2430,10 @@ test('P2 templates and governance freeze Draft-only task-scoped entry', async ()
 });
 
 test('observer workflow is read-only, pinned, queued, and never executes PR head', async () => {
-  const workflow = await readFile(
+  const workflow = (await readFile(
     new URL('../workflows/autonomous-control-gate-v2.yml', import.meta.url),
     'utf8',
-  );
+  )).replaceAll('\r\n', '\n');
   assert.match(workflow, /actions:\s*read/u);
   assert.match(workflow, /checks:\s*read/u);
   assert.match(workflow, /contents:\s*read/u);
@@ -1596,7 +2455,9 @@ test('observer workflow is read-only, pinned, queued, and never executes PR head
   assert.match(workflow, /persist-credentials:\s*false/u);
   assert.match(workflow, /CONTROL_PLANE_MODE:\s*OBSERVER_ONLY/u);
 
-  const ciWorkflow = await readFile(new URL('../workflows/ci.yml', import.meta.url), 'utf8');
+  const ciWorkflow = (
+    await readFile(new URL('../workflows/ci.yml', import.meta.url), 'utf8')
+  ).replaceAll('\r\n', '\n');
   assert.match(
     ciWorkflow,
     /run-name: CI \$\{\{ github\.event_name \}\} PR-\$\{\{ github\.event\.pull_request\.number \|\| 'none' \}\} base-/u,
