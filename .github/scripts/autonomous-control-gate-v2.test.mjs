@@ -4,6 +4,11 @@ import test from 'node:test';
 
 import {
   POLICY,
+  repositoryMergeCapabilities,
+  S1I_REPAIR,
+  validateS1iMigration,
+  loadS1iMigration,
+  validateProgramHistory,
   assertStableSnapshots,
   canonicalProgramIssueContract,
   evaluateControlSnapshot,
@@ -630,6 +635,62 @@ test('program child exact-head evidence is machine-consumed for Ready and merge 
   const mergeResult = evaluateControlSnapshot(ready);
   assert.equal(mergeResult.result, 'PASS');
   assert.equal(mergeResult.decision, 'PROGRAM_CHILD_SAFE_TO_SQUASH_MERGE');
+});
+
+test('reproduces REST omission: available capability is not inferred from an absent field', () => {
+  const snapshot = makeProgramSnapshot();
+  delete snapshot.repository.allowSquashMerge;
+  assert.match(holdReason(snapshot), /PROGRAM_SQUASH_MERGE_NOT_AVAILABLE/u);
+  snapshot.repository.allowSquashMerge = true;
+  assert.equal(evaluateProgramChildSnapshot(snapshot).result, 'PASS');
+});
+
+test('GraphQL capability proof preserves booleans and rejects missing, malformed, identity and permission errors', async () => {
+  const repository = { databaseId: POLICY.repositoryId, nameWithOwner: POLICY.repositoryFullName,
+    autoMergeAllowed: false, squashMergeAllowed: true };
+  const api = (value) => ({ async graphql(query) {
+    assert.match(query, /autoMergeAllowed squashMergeAllowed/u);
+    return { repository: value };
+  } });
+  for (const value of [true, false]) {
+    assert.deepEqual(await repositoryMergeCapabilities(api({ ...repository, squashMergeAllowed: value })),
+      { allowAutoMerge: false, allowSquashMerge: value });
+    const snapshot = makeProgramSnapshot();
+    snapshot.repository.allowSquashMerge = value;
+    assert.equal(evaluateProgramChildSnapshot(snapshot).result, value ? 'PASS' : 'HOLD');
+  }
+  for (const value of [undefined, null, 1, 'true']) {
+    await assert.rejects(repositoryMergeCapabilities(api({ ...repository, squashMergeAllowed: value })),
+      /MERGE_CAPABILITIES_GRAPHQL_SHAPE_INVALID/u);
+  }
+  for (const change of [{ databaseId: 0 }, { nameWithOwner: 'other/repo' }, { autoMergeAllowed: null }]) {
+    await assert.rejects(repositoryMergeCapabilities(api({ ...repository, ...change })),
+      /MERGE_CAPABILITIES_GRAPHQL_SHAPE_INVALID/u);
+  }
+  for (const message of ['GITHUB_GRAPHQL_403', 'GITHUB_GRAPHQL_SHAPE_OR_ERRORS']) {
+    await assert.rejects(repositoryMergeCapabilities({ async graphql() { throw new Error(message); } }),
+      new RegExp(message, 'u'));
+  }
+});
+
+test('complete snapshots detect repository capability and current CI attempt, suite and job changes', () => {
+  const first = makeProgramSnapshot();
+  for (const mutate of [
+    (s) => { s.repository.allowSquashMerge = false; },
+    (s) => { delete s.repository.allowSquashMerge; },
+    (s) => { s.repository.allowAutoMerge = true; },
+    (s) => { s.repository.id += 1; },
+    (s) => { s.ci.runAttempt += 1; },
+    (s) => { s.ci.checkSuite.id += 1; },
+    (s) => { s.ci.checkSuite.conclusion = 'failure'; },
+    (s) => { s.ci.jobs[0].id += 1; },
+    (s) => { s.ci.jobs[0].runAttempt += 1; },
+    (s) => { s.ci.jobs[0].conclusion = 'failure'; },
+  ]) {
+    const second = structuredClone(first);
+    mutate(second);
+    assert.throws(() => assertStableSnapshots(first, second), /SNAPSHOT_CHANGED_DURING_READ/u);
+  }
 });
 
 test('ordinal 3 requires two distinct exact-Head reviewers and the frozen nine paths', () => {
@@ -2393,6 +2454,259 @@ test('structured PASS reports exact operation and output paths', () => {
     /^PUBLISHED_CORRECTION_ROUND_COUNT=UNVERIFIED_FROM_READ_ONLY_GITHUB_METADATA$/mu,
   );
   assert.match(output, /^FAILURE_CLASS=NONE$/mu);
+});
+
+function migrationFixture(ordinal = 2) {
+  const snapshot = ordinal === 2 ? makeProgramSnapshot() : makeProgramOrdinal3Snapshot();
+  const child = snapshot.program.bindings.find((entry) => entry.binding.childOrdinal === 2);
+  const newBase = '9'.repeat(40);
+  Object.assign(child.binding, { authorizedBaseSha: newBase, expectedBaseSha: newBase,
+    previousMergeSha: newBase, delegationActivationSha: S1I_REPAIR.oldBaseSha,
+    authorizedHeadRef: S1I_REPAIR.childBranch, grantId: S1I_REPAIR.grantId,
+    nonce: S1I_REPAIR.nonce, issueContractSha256: S1I_REPAIR.issueContractSha256 });
+  child.issueNumber = 57;
+  child.pr.number = 58;
+  child.pr.base.sha = newBase;
+  child.pr.head.ref = S1I_REPAIR.childBranch;
+  snapshot.program.root.pr.mergeCommitSha = S1I_REPAIR.oldBaseSha;
+  if (ordinal === 2) snapshot.program.binding = child.binding;
+  const repairSnapshot = makeProgramSnapshot();
+  Object.assign(repairSnapshot.pr, { number: 60, state: 'closed', merged: true,
+    mergedAt: '2026-09-05T00:05:00Z', mergeCommitSha: newBase });
+  repairSnapshot.pr.base.sha = S1I_REPAIR.oldBaseSha;
+  repairSnapshot.pr.head.ref = S1I_REPAIR.repairBranch;
+  syncProgramCi(repairSnapshot);
+  const record = { schema: 's1i-baseline-migration-v1', migrationId: S1I_REPAIR.migrationId,
+    programId: PROGRAM_ID, issueNumber: 57, prNumber: 58, oldBaseSha: S1I_REPAIR.oldBaseSha,
+    newBaseSha: newBase, repairIssueNumber: 59, repairPrNumber: 60, repairMergeSha: newBase,
+    grantId: S1I_REPAIR.grantId, nonce: S1I_REPAIR.nonce,
+    issueBodySha256: 'a'.repeat(64), consumptionState: 'CONSUMED' };
+  const evidence = { record, comment: { id: 9910, user: owner(), authorAssociation: 'OWNER',
+    createdAt: '2026-09-05T00:07:00Z', updatedAt: '2026-09-05T00:07:00Z' },
+    repair: repairSnapshot.pr, ci: repairSnapshot.ci,
+    mergeCommit: { sha: newBase, parents: [{ sha: S1I_REPAIR.oldBaseSha }], tree: { sha: 'a'.repeat(40) } },
+    headCommit: { sha: repairSnapshot.pr.head.sha, tree: { sha: 'a'.repeat(40) } },
+    activationCi: programActivationCiEvidence(newBase), approvalCreatedAt: '2026-09-04T00:00:00Z',
+    repairIdentityAndScopeValid: true, businessDeltaValid: true,
+    businessEvidenceDigest: 'b'.repeat(64), issueBodySha256: record.issueBodySha256 };
+  snapshot.program.migration = evidence;
+  evidence.ci.jobs[0].completedAt = '2026-09-05T00:04:00Z';
+  evidence.activationCi.jobs[0].completedAt = '2026-09-05T00:06:30Z';
+  evidence.prTimeline = [{ event: 'ready_for_review', actor: owner(), createdAt: '2026-09-05T00:04:30Z' }];
+  evidence.issueTimeline = [];
+  return { snapshot, child, evidence };
+}
+
+function migrationApiFixture() {
+  const { child, evidence } = migrationFixture();
+  const repositoryPath = `/repos/${POLICY.repositoryFullName}`;
+  const responses = new Map();
+  const lists = new Map();
+  const calls = [];
+  const paths = ['.github/scripts/autonomous-control-gate-v2.mjs',
+    '.github/scripts/autonomous-control-gate-v2.test.mjs', '.github/workflows/ci.yml',
+    'AGENTS.md', 'docs/governance/GITHUB_AUTONOMOUS_DEVELOPMENT_CONTROL_PLANE_V2.md'];
+  const issue = { number: 57, body: 'frozen migrated child issue\n' };
+  evidence.record.issueBodySha256 = sha256Text(issue.body);
+  const contract = { schema: POLICY.schema, taskClass: 'CONTROL_PLANE_CHANGE',
+    phase: 'P2_LOCKED', authorizedBaseSha: S1I_REPAIR.oldBaseSha, maxRepairRounds: 0,
+    allowedPaths: paths, requiredChecks: [POLICY.qualityJobName] };
+  const repairIssue = { number: 59, user: owner(), state: 'closed',
+    body: marker('CONTROL_PLANE_V2_CONTRACT', contract) };
+  const digest = sha256Text(repairIssue.body);
+  const rawComment = (id, body, createdAt) => ({ id, body, user: owner(),
+    author_association: 'OWNER', created_at: createdAt, updated_at: createdAt });
+  const rawRef = (ref) => ({ ref: ref.ref, sha: ref.sha, repo: { id: ref.repoId } });
+  const repair = evidence.repair;
+  const rawRepair = { number: repair.number, state: 'closed', draft: false, merged: true,
+    merged_at: repair.mergedAt, merge_commit_sha: repair.mergeCommitSha,
+    created_at: repair.createdAt, updated_at: repair.mergedAt, user: owner(), changed_files: paths.length,
+    base: rawRef(repair.base), head: rawRef(repair.head),
+    body: marker('CONTROL_PLANE_V2_LINK', { schema: POLICY.schema, issueNumber: 59,
+      approvalCommentId: 9901, authorizedBaseSha: S1I_REPAIR.oldBaseSha, issueBodySha256: digest }) };
+  responses.set('/pulls/60', rawRepair);
+  responses.set('/issues/59', repairIssue);
+  lists.set('/issues/57/comments', [rawComment(9910,
+    marker('S1I_BASELINE_MIGRATION_JSON', evidence.record), evidence.comment.createdAt)]);
+  lists.set(`/pulls?state=all&head=${encodeURIComponent(`${POLICY.owner.login}:${S1I_REPAIR.repairBranch}`)}`,
+    [{ number: 60 }]);
+  lists.set('/issues/59/comments', [rawComment(9901, marker('CONTROL_PLANE_V2_APPROVAL', {
+    schema: POLICY.schema, authorizedBaseSha: S1I_REPAIR.oldBaseSha, issueBodySha256: digest,
+    maxRepairRounds: 0, phase: 'P2_LOCKED',
+  }), evidence.approvalCreatedAt)]);
+  lists.set('/issues/60/comments', [rawComment(9902, marker('PROGRAM_INDEPENDENT_REVIEW_JSON', {
+    schema: 'autonomous-delivery-review-v1', programId: PROGRAM_ID, prNumber: 60,
+    headSha: repair.head.sha, reviewerSessionId: 'reviewer-independent-api-fixture',
+    reviewedAt: '2026-09-05T00:04:00Z', verdict: 'PASS', findings: [],
+  }), '2026-09-05T00:04:01Z')]);
+  lists.set('/issues/60/timeline', [{ event: 'ready_for_review', actor: owner(),
+    created_at: '2026-09-05T00:04:30Z' }]);
+  lists.set('/issues/59/timeline', [{ event: 'closed', actor: owner(), created_at: repair.mergedAt }]);
+  lists.set('/pulls/60/files', paths.map((filename) => ({ filename, status: 'modified' })));
+  const baseTreeSha = 'b'.repeat(40);
+  responses.set(`/git/commits/${S1I_REPAIR.oldBaseSha}`,
+    { sha: S1I_REPAIR.oldBaseSha, tree: { sha: baseTreeSha } });
+  responses.set(`/git/commits/${repair.head.sha}`, evidence.headCommit);
+  responses.set(`/git/commits/${repair.mergeCommitSha}`, evidence.mergeCommit);
+  for (const [treeSha, blobSha] of [[baseTreeSha, 'c'.repeat(40)],
+    [evidence.headCommit.tree.sha, 'd'.repeat(40)]]) {
+    responses.set(`/git/trees/${treeSha}?recursive=1`, { sha: treeSha, truncated: false,
+      tree: paths.map((path) => ({ path, mode: '100644', type: 'blob', sha: blobSha })) });
+  }
+  responses.set(`/actions/workflows/${POLICY.qualityWorkflowId}`, {
+    id: POLICY.qualityWorkflowId, name: POLICY.qualityWorkflowName,
+    path: POLICY.qualityWorkflowPath, state: 'active',
+  });
+  for (const ci of [evidence.ci, evidence.activationCi]) {
+    const runPath = ci.event === 'push'
+      ? `/actions/workflows/ci.yml/runs?event=push&branch=main&head_sha=${ci.headSha}&per_page=100`
+      : `/actions/workflows/ci.yml/runs?event=pull_request&head_sha=${ci.headSha}&per_page=100`;
+    responses.set(runPath, { total_count: 1, workflow_runs: [{ id: ci.id,
+      run_attempt: ci.runAttempt, workflow_id: ci.workflowId, path: ci.runPath,
+      name: ci.runName, display_title: ci.displayTitle, event: ci.event,
+      head_sha: ci.headSha, head_branch: ci.headBranch, repository: { id: ci.repositoryId },
+      head_repository: { id: ci.headRepositoryId }, created_at: ci.createdAt,
+      status: ci.status, conclusion: ci.conclusion, check_suite_id: ci.checkSuiteId }] });
+    responses.set(`/actions/runs/${ci.id}/jobs?filter=latest&per_page=100`, {
+      total_count: 1, jobs: ci.jobs.map((job) => ({ id: job.id, name: job.name,
+        status: job.status, conclusion: job.conclusion, head_sha: job.headSha,
+        run_id: job.runId, run_attempt: job.runAttempt, completed_at: job.completedAt })) });
+    responses.set(`/check-suites/${ci.checkSuiteId}`, { id: ci.checkSuiteId,
+      repository: { id: POLICY.repositoryId }, app: { id: POLICY.actionsApp.id, slug: POLICY.actionsApp.slug },
+      head_sha: ci.headSha, head_branch: ci.headBranch, after: ci.headSha,
+      status: ci.status, conclusion: ci.conclusion, pull_requests: [] });
+  }
+  // The child head is separate from the repair head in the real API.
+  child.pr.head.sha = 'e'.repeat(40);
+  for (const path of ['AGENTS.md',
+    'docs/governance/GITHUB_AUTONOMOUS_DEVELOPMENT_CONTROL_PLANE_V2.md',
+    'docs/governance/V5_P2_ENTRY_GOVERNANCE.md']) {
+    for (const [ref, content] of [[S1I_REPAIR.oldBaseSha, 'base\n'],
+      [S1I_REPAIR.originalHeadSha, 'original business\n'],
+      [repair.mergeCommitSha, 'base\nrepair append\n'],
+      [child.pr.head.sha, 'original business\nrepair append\n']]) {
+      responses.set(`/contents/${path}?ref=${ref}`, { type: 'file', encoding: 'base64',
+        content: Buffer.from(content).toString('base64') });
+    }
+  }
+  const lookup = (map, path) => {
+    assert.ok(path.startsWith(repositoryPath));
+    const key = path.slice(repositoryPath.length);
+    calls.push(key);
+    assert.ok(map.has(key), `unexpected migration API path: ${key}`);
+    return structuredClone(map.get(key));
+  };
+  return { child, issue, evidence, repositoryPath, responses, lists, calls,
+    api: { async request(path) { return { data: lookup(responses, path) }; },
+      async list(path) { return lookup(lists, path); } } };
+}
+
+test('migration loader assembles exact merged-PR API evidence including CI completion and lifecycle', async () => {
+  const fixture = migrationApiFixture();
+  const evidence = await loadS1iMigration(fixture.api, fixture.repositoryPath, fixture.child, fixture.issue);
+  assert.equal(evidence.record.newBaseSha, fixture.evidence.record.newBaseSha);
+  assert.equal(evidence.repairIdentityAndScopeValid, true);
+  assert.equal(evidence.businessDeltaValid, true);
+  assert.equal(evidence.business.length, 3);
+  assert.equal(evidence.ci.jobs[0].completedAt, fixture.evidence.ci.jobs[0].completedAt);
+  assert.equal(evidence.activationCi.jobs[0].completedAt, fixture.evidence.activationCi.jobs[0].completedAt);
+  assert.equal(evidence.prTimeline[0].event, 'ready_for_review');
+  assert.equal(evidence.issueTimeline[0].event, 'closed');
+  assert.equal(fixture.calls.filter((path) => path.startsWith('/contents/')).length, 12);
+});
+
+test('migration loader rejects duplicate consumption, force-push, content drift and missing completion', async () => {
+  const cases = [
+    [(f) => f.lists.get('/issues/57/comments').push({ ...f.lists.get('/issues/57/comments')[0], id: 9911 }),
+      /S1I_MIGRATION_RECORD_COUNT_INVALID/u],
+    [(f) => f.lists.get('/issues/60/timeline').push({ event: 'head_ref_force_pushed',
+      actor: owner(), created_at: '2026-09-05T00:03:00Z' }), /PROGRAM_PRIOR_CHILD_PERMANENT_HISTORY_INVALID/u],
+    [(f) => { f.responses.get(`/contents/AGENTS.md?ref=${f.child.pr.head.sha}`).content =
+      Buffer.from('drift\n').toString('base64'); }, /S1I_BUSINESS_DELTA_CHANGED/u],
+    ...['ci', 'activationCi'].map((name) => [(f) => {
+      delete f.responses.get(`/actions/runs/${f.evidence[name].id}/jobs?filter=latest&per_page=100`)
+        .jobs[0].completed_at;
+    }, /S1I_MIGRATION_CI_TIMING_INVALID/u]),
+  ];
+  for (const [mutate, expected] of cases) {
+    const fixture = migrationApiFixture();
+    mutate(fixture);
+    await assert.rejects(loadS1iMigration(fixture.api, fixture.repositoryPath,
+      fixture.child, fixture.issue), expected);
+  }
+});
+
+test('one exact consumed migration supports child2 and revalidates child3 historical consumption', () => {
+  for (const ordinal of [2, 3]) {
+    const { snapshot, child, evidence } = migrationFixture(ordinal);
+    assert.equal(validateS1iMigration(evidence, child), evidence.record.newBaseSha);
+    assert.doesNotThrow(() => validateProgramHistory(snapshot.program, snapshot.program.binding));
+    assert.doesNotThrow(() => validateProgramHistory(snapshot.program, snapshot.program.binding));
+    delete snapshot.program.migration;
+    assert.throws(() => validateProgramHistory(snapshot.program, snapshot.program.binding), /S1I_MIGRATION_MISSING/u);
+  }
+});
+
+test('migration rejects identity, replay, edits, history, tree, scope, CI and business drift', () => {
+  const mutations = [
+    (e) => { e.record.oldBaseSha = '8'.repeat(40); },
+    (e) => { e.record.newBaseSha = '8'.repeat(40); },
+    (e) => { e.record.repairMergeSha = '8'.repeat(40); },
+    (e) => { e.record.repairPrNumber += 1; },
+    (e) => { e.record.issueNumber += 1; },
+    (e) => { e.record.prNumber += 1; },
+    (e) => { e.record.programId += '-other'; },
+    (e) => { e.record.grantId += '-replay'; },
+    (e) => { e.record.nonce += '0'; },
+    (e) => { e.record.consumptionState = 'AVAILABLE'; },
+    (e) => { e.record.issueBodySha256 = '0'.repeat(64); },
+    (e) => { e.comment.updatedAt = '2026-09-05T00:08:00Z'; },
+    (e) => { e.comment.user.id += 1; },
+    (e) => { e.repair.user.id += 1; },
+    (e) => { e.repair.head.repoId += 1; },
+    (e) => { e.repair.head.ref = 'other'; },
+    (e) => { e.mergeCommit.parents.push({ sha: '0'.repeat(40) }); },
+    (e) => { e.mergeCommit.parents[0].sha = '0'.repeat(40); },
+    (e) => { e.mergeCommit.tree.sha = '0'.repeat(40); },
+    (e) => { e.repairIdentityAndScopeValid = false; },
+    (e) => { e.businessDeltaValid = false; },
+    (e) => { e.ci.headSha = '0'.repeat(40); },
+    (e) => { e.ci.conclusion = 'failure'; },
+    (e) => { e.activationCi.conclusion = 'failure'; },
+    (e) => { e.activationCi.runAttempt += 1; },
+    (e) => { e.activationCi.checkSuite.id += 1; },
+    (e) => { e.activationCi.jobs[0].id = null; },
+    (e) => { delete e.ci.jobs[0].completedAt; },
+    (e) => { e.ci.jobs[0].completedAt = e.repair.mergedAt; },
+    (e) => { e.approvalCreatedAt = e.repair.mergedAt; },
+    (e) => { e.activationCi.jobs[0].completedAt = e.comment.createdAt; },
+    (e) => { e.activationCi.jobs[0].completedAt = 'invalid'; },
+    (e) => { e.prTimeline.push({ event: 'head_ref_force_pushed', createdAt: '2026-09-05T00:03:00Z' }); },
+    (e) => { e.issueTimeline.push({ event: 'reopened', createdAt: '2026-09-05T00:03:00Z' }); },
+    (e) => { e.issueTimeline.push({ event: 'closed', createdAt: '2026-09-05T00:03:00Z' }); },
+  ];
+  for (const mutate of mutations) {
+    const { snapshot, evidence } = migrationFixture(3);
+    const first = structuredClone(snapshot);
+    mutate(evidence);
+    assert.throws(() => validateProgramHistory(snapshot.program, snapshot.program.binding));
+    assert.throws(() => assertStableSnapshots(first, snapshot), /SNAPSHOT_CHANGED_DURING_READ/u);
+  }
+});
+
+test('migration never permits a second target, old-base replay or unrelated main', () => {
+  for (const mutate of [
+    (c) => { c.pr.number += 1; }, (c) => { c.issueNumber += 1; },
+    (c) => { c.binding.previousMergeSha = S1I_REPAIR.oldBaseSha; },
+    (c) => { c.binding.authorizedBaseSha = S1I_REPAIR.oldBaseSha; },
+    (c) => { c.binding.authorizedBaseSha = '7'.repeat(40); },
+    (c) => { c.binding.issueContractSha256 = '0'.repeat(64); },
+    (c) => { c.binding.delegationActivationSha = '7'.repeat(40); },
+  ]) {
+    const { child, evidence } = migrationFixture();
+    mutate(child);
+    assert.throws(() => validateS1iMigration(evidence, child), /S1I_MIGRATION/u);
+  }
 });
 
 test('P2 templates and governance freeze Draft-only task-scoped entry', async () => {
