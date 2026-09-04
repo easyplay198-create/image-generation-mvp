@@ -1194,6 +1194,42 @@ function validateCi(ci, pr, approvalCreatedAt) {
   return ci.conclusion;
 }
 
+export function validateProgramActivationCiEvidence(ci, expectedHeadSha) {
+  const expectedRunName =
+    `${POLICY.qualityWorkflowName} push PR-none base-${expectedHeadSha} head-${expectedHeadSha}`;
+  const suite = ci?.checkSuite;
+  const jobs = ci?.jobs;
+  const job = Array.isArray(jobs) ? jobs[0] : null;
+  if (
+    !isCommitSha(expectedHeadSha) || !ci ||
+    !Number.isInteger(ci.id) || ci.id < 1 ||
+    !Number.isInteger(ci.runAttempt) || ci.runAttempt < 1 ||
+    ci.workflowId !== POLICY.qualityWorkflowId ||
+    ci.workflowName !== POLICY.qualityWorkflowName ||
+    ci.workflowPath !== POLICY.qualityWorkflowPath || ci.workflowState !== 'active' ||
+    ci.runName !== expectedRunName || ci.runPath !== POLICY.qualityWorkflowPath ||
+    ci.displayTitle !== expectedRunName || ci.event !== 'push' ||
+    ci.headSha !== expectedHeadSha || ci.headBranch !== POLICY.defaultBranch ||
+    ci.repositoryId !== POLICY.repositoryId || ci.headRepositoryId !== POLICY.repositoryId ||
+    !Number.isFinite(Date.parse(ci.createdAt)) ||
+    ci.status !== 'completed' || ci.conclusion !== 'success' ||
+    !Number.isInteger(ci.checkSuiteId) || ci.checkSuiteId < 1 ||
+    !suite || suite.id !== ci.checkSuiteId || suite.repositoryId !== POLICY.repositoryId ||
+    suite.appId !== POLICY.actionsApp.id || suite.appSlug !== POLICY.actionsApp.slug ||
+    suite.headSha !== expectedHeadSha || suite.headBranch !== POLICY.defaultBranch ||
+    suite.after !== expectedHeadSha || suite.status !== 'completed' ||
+    suite.conclusion !== 'success' || !Array.isArray(suite.pullRequests) ||
+    ci.jobTotalCount !== 1 || !Array.isArray(jobs) || jobs.length !== 1 ||
+    !Number.isInteger(job?.id) || job.id < 1 || job.name !== POLICY.qualityJobName ||
+    job.status !== 'completed' || job.conclusion !== 'success' ||
+    job.headSha !== expectedHeadSha || job.runId !== ci.id ||
+    job.runAttempt !== ci.runAttempt
+  ) {
+    throw new Error('PROGRAM_ACTIVATION_CI_EVIDENCE_INVALID');
+  }
+  return ci;
+}
+
 function validatePrTimeline(prTimeline, ci) {
   if (!Array.isArray(prTimeline)) throw new Error('PR_TIMELINE_RESPONSE_SHAPE_INVALID');
   const ciCreatedAt = Date.parse(ci.createdAt);
@@ -1242,12 +1278,16 @@ function validateProgramHistory(program, currentBinding) {
     entry.pr?.head?.ref !== entry.binding.authorizedHeadRef ||
     !isCommitSha(entry.pr?.head?.sha) ||
     entry.mergeParentValid !== true || entry.exactConsumptionValid !== true ||
-    !isSha256(entry.evidenceDigest) ||
-    entry.activationCi?.status !== 'completed' ||
-    entry.activationCi?.conclusion !== 'success' ||
-    entry.activationCi?.headSha !== entry.pr?.mergeCommitSha
+    !isSha256(entry.evidenceDigest)
   ))) {
     throw new Error('PROGRAM_PRIOR_CHILD_NOT_EXACTLY_CONSUMED');
+  }
+  for (const entry of priorChildren) {
+    try {
+      validateProgramActivationCiEvidence(entry.activationCi, entry.pr.mergeCommitSha);
+    } catch {
+      throw new Error('PROGRAM_PRIOR_CHILD_NOT_EXACTLY_CONSUMED');
+    }
   }
   const expectedPreviousMerge = currentBinding.childOrdinal === 2
     ? program.root.pr.mergeCommitSha
@@ -1345,6 +1385,14 @@ export function evaluateProgramChildSnapshot(snapshot) {
       snapshot.program.root.binding,
       snapshot.program.root.issue.body,
     );
+    try {
+      validateProgramActivationCiEvidence(
+        snapshot.program.root.activationCi,
+        binding.delegationActivationSha,
+      );
+    } catch {
+      throw new Error('PROGRAM_DELEGATION_NOT_EXACTLY_ACTIVATED');
+    }
     if (
       snapshot.program.root.issue.number !== PROGRAM_ROOT_ISSUE_NUMBER ||
       snapshot.program.root.issue.user?.id !== POLICY.owner.id ||
@@ -1354,10 +1402,7 @@ export function evaluateProgramChildSnapshot(snapshot) {
       snapshot.program.root.mergeParentValid !== true ||
       snapshot.program.root.pr.mergeCommitSha !== binding.delegationActivationSha ||
       snapshot.program.root.pr.head.ref !== rootBinding.authorizedHeadRef ||
-      snapshot.program.root.pr.base.sha !== rootBinding.authorizedBaseSha ||
-      snapshot.program.root.activationCi?.status !== 'completed' ||
-      snapshot.program.root.activationCi?.conclusion !== 'success' ||
-      snapshot.program.root.activationCi?.headSha !== binding.delegationActivationSha
+      snapshot.program.root.pr.base.sha !== rootBinding.authorizedBaseSha
     ) {
       throw new Error('PROGRAM_DELEGATION_NOT_EXACTLY_ACTIVATED');
     }
@@ -1896,7 +1941,7 @@ async function repositoryAutoMerge(api) {
   return data.repository.autoMergeAllowed;
 }
 
-async function exactMainPushCi(api, repositoryPath, headSha) {
+export async function exactMainPushCi(api, repositoryPath, headSha) {
   const [{ data }, { data: workflow }] = await Promise.all([
     api.request(
       `${repositoryPath}/actions/workflows/ci.yml/runs?event=push&branch=${POLICY.defaultBranch}` +
@@ -1942,7 +1987,8 @@ async function exactMainPushCi(api, repositoryPath, headSha) {
     jobs.jobs[0].run_id !== run.id || jobs.jobs[0].run_attempt !== run.run_attempt ||
     suite.id !== run.check_suite_id || suite.repository?.id !== POLICY.repositoryId ||
     suite.app?.id !== POLICY.actionsApp.id || suite.app?.slug !== POLICY.actionsApp.slug ||
-    suite.head_sha !== headSha || suite.after !== headSha ||
+    suite.head_sha !== headSha || suite.head_branch !== POLICY.defaultBranch ||
+    suite.after !== headSha || !Array.isArray(suite.pull_requests) ||
     suite.status !== 'completed' || suite.conclusion !== 'success'
   ) {
     throw new Error('PROGRAM_ACTIVATION_CI_EVIDENCE_INVALID');
@@ -1950,13 +1996,49 @@ async function exactMainPushCi(api, repositoryPath, headSha) {
   if (!Number.isFinite(Date.parse(run.created_at))) {
     throw new Error('PROGRAM_ACTIVATION_CI_CREATED_AT_INVALID');
   }
-  return {
+  const evidence = {
+    id: run.id,
+    runAttempt: run.run_attempt,
+    workflowId: run.workflow_id,
+    workflowName: workflow.name,
+    workflowPath: workflow.path,
+    workflowState: workflow.state,
+    runName: run.name,
+    runPath: run.path,
+    displayTitle: run.display_title,
+    event: run.event,
+    headSha: run.head_sha,
+    headBranch: run.head_branch,
+    repositoryId: run.repository?.id,
+    headRepositoryId: run.head_repository?.id,
+    createdAt: run.created_at,
     status: run.status,
     conclusion: run.conclusion,
-    headSha,
-    id: run.id,
-    createdAt: run.created_at,
+    checkSuiteId: run.check_suite_id,
+    checkSuite: {
+      id: suite.id,
+      repositoryId: suite.repository?.id,
+      appId: suite.app?.id,
+      appSlug: suite.app?.slug,
+      headSha: suite.head_sha,
+      headBranch: suite.head_branch,
+      after: suite.after,
+      status: suite.status,
+      conclusion: suite.conclusion,
+      pullRequests: suite.pull_requests.map(normalizeSuitePullRequest),
+    },
+    jobTotalCount: jobs.total_count,
+    jobs: jobs.jobs.map((job) => ({
+      id: job.id,
+      name: job.name,
+      status: job.status,
+      conclusion: job.conclusion,
+      headSha: job.head_sha,
+      runId: job.run_id,
+      runAttempt: job.run_attempt,
+    })).sort((a, b) => a.id - b.id),
   };
+  return validateProgramActivationCiEvidence(evidence, headSha);
 }
 
 function normalizeHistoricalPull(pr) {
@@ -2381,6 +2463,12 @@ async function loadSnapshotOnce(api, repositoryPath, prNumber, eventName, event,
   };
 }
 
+export function assertStableSnapshots(first, closing) {
+  if (sha256Text(JSON.stringify(first)) !== sha256Text(JSON.stringify(closing))) {
+    throw new Error('SNAPSHOT_CHANGED_DURING_READ');
+  }
+}
+
 export async function buildSnapshotFromGitHub({
   eventName,
   event,
@@ -2395,9 +2483,7 @@ export async function buildSnapshotFromGitHub({
   const observedAt = new Date().toISOString();
   const first = await loadSnapshotOnce(api, repositoryPath, prNumber, eventName, event, observedAt);
   const closing = await loadSnapshotOnce(api, repositoryPath, prNumber, eventName, event, observedAt);
-  if (sha256Text(JSON.stringify(first)) !== sha256Text(JSON.stringify(closing))) {
-    throw new Error('SNAPSHOT_CHANGED_DURING_READ');
-  }
+  assertStableSnapshots(first, closing);
   const { data: finalPr } = await api.request(`${repositoryPath}/pulls/${prNumber}`);
   const finalPrIdentity = {
     number: finalPr.number,

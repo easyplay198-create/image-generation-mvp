@@ -4,10 +4,12 @@ import test from 'node:test';
 
 import {
   POLICY,
+  assertStableSnapshots,
   canonicalProgramIssueContract,
   evaluateControlSnapshot,
   evaluateNamedSingleUseResource,
   evaluateProgramChildSnapshot,
+  exactMainPushCi,
   extractMarkedJson,
   formatResultLines,
   isCanonicalHeadRef,
@@ -205,6 +207,52 @@ const PROGRAM_ROOT_MERGE_SHA = '2'.repeat(40);
 const PROGRAM_HEAD_SHA = '3'.repeat(40);
 const PROGRAM_CHILD_2_MERGE_SHA = '5'.repeat(40);
 const PROGRAM_RESOURCE_NAME = 'P2_S1I_COMPAT_DDL_V1';
+
+function programActivationCiEvidence(headSha, { id = 8801, runAttempt = 1 } = {}) {
+  const runName = `CI push PR-none base-${headSha} head-${headSha}`;
+  return {
+    id,
+    runAttempt,
+    workflowId: POLICY.qualityWorkflowId,
+    workflowName: POLICY.qualityWorkflowName,
+    workflowPath: POLICY.qualityWorkflowPath,
+    workflowState: 'active',
+    runName,
+    runPath: POLICY.qualityWorkflowPath,
+    displayTitle: runName,
+    event: 'push',
+    headSha,
+    headBranch: 'main',
+    repositoryId: POLICY.repositoryId,
+    headRepositoryId: POLICY.repositoryId,
+    createdAt: '2026-09-05T00:06:00Z',
+    status: 'completed',
+    conclusion: 'success',
+    checkSuiteId: 8811,
+    checkSuite: {
+      id: 8811,
+      repositoryId: POLICY.repositoryId,
+      appId: POLICY.actionsApp.id,
+      appSlug: POLICY.actionsApp.slug,
+      headSha,
+      headBranch: 'main',
+      after: headSha,
+      status: 'completed',
+      conclusion: 'success',
+      pullRequests: [],
+    },
+    jobTotalCount: 1,
+    jobs: [{
+      id: 8821,
+      name: POLICY.qualityJobName,
+      status: 'completed',
+      conclusion: 'success',
+      headSha,
+      runId: id,
+      runAttempt,
+    }],
+  };
+}
 
 function programChild3Paths() {
   return [
@@ -437,7 +485,7 @@ function makeProgramSnapshot({
       mergeParentValid: true,
       legacyApprovalValid: true,
       diffValid: true,
-      activationCi: { status: 'completed', conclusion: 'success', headSha: PROGRAM_ROOT_MERGE_SHA },
+      activationCi: programActivationCiEvidence(PROGRAM_ROOT_MERGE_SHA),
     },
     bindings: [],
   };
@@ -503,11 +551,10 @@ function makeProgramOrdinal3Snapshot() {
     mergeParentValid: true,
     exactConsumptionValid: true,
     evidenceDigest: 'd'.repeat(64),
-    activationCi: {
-      status: 'completed',
-      conclusion: 'success',
-      headSha: PROGRAM_CHILD_2_MERGE_SHA,
-    },
+    activationCi: programActivationCiEvidence(
+      PROGRAM_CHILD_2_MERGE_SHA,
+      { id: 8901 },
+    ),
   });
   snapshot.issue.number = 58;
   snapshot.pr.number = 59;
@@ -752,6 +799,9 @@ test('program delegation fails closed before exact bootstrap activation and exac
     (snapshot) => { snapshot.program.root.diffValid = false; },
     (snapshot) => { snapshot.program.root.activationCi.conclusion = 'failure'; },
     (snapshot) => { snapshot.program.root.activationCi.headSha = '9'.repeat(40); },
+    (snapshot) => { snapshot.program.root.activationCi.runAttempt = 2; },
+    (snapshot) => { snapshot.program.root.activationCi.checkSuite.status = 'queued'; },
+    (snapshot) => { snapshot.program.root.activationCi.jobs[0].id = null; },
   ]) {
     const snapshot = makeProgramSnapshot();
     mutate(snapshot);
@@ -2102,6 +2152,100 @@ function ciApiFixture({
     },
   };
 }
+
+function mainPushCiApiFixture() {
+  const evidence = programActivationCiEvidence(HEAD_SHA);
+  const run = {
+    id: evidence.id,
+    run_attempt: evidence.runAttempt,
+    workflow_id: evidence.workflowId,
+    name: evidence.runName,
+    display_title: evidence.displayTitle,
+    path: evidence.runPath,
+    event: evidence.event,
+    head_sha: evidence.headSha,
+    head_branch: evidence.headBranch,
+    repository: { id: evidence.repositoryId },
+    head_repository: { id: evidence.headRepositoryId },
+    created_at: evidence.createdAt,
+    status: evidence.status,
+    conclusion: evidence.conclusion,
+    check_suite_id: evidence.checkSuiteId,
+  };
+  return {
+    async request(path) {
+      if (path.includes('/actions/workflows/ci.yml/runs')) {
+        return { data: { total_count: 1, workflow_runs: [run] } };
+      }
+      if (path.endsWith(`/actions/workflows/${POLICY.qualityWorkflowId}`)) {
+        return { data: {
+          id: POLICY.qualityWorkflowId,
+          name: POLICY.qualityWorkflowName,
+          path: POLICY.qualityWorkflowPath,
+          state: 'active',
+        } };
+      }
+      if (path.includes(`/actions/runs/${evidence.id}/jobs`)) {
+        return { data: { total_count: 1, jobs: [{
+          id: evidence.jobs[0].id,
+          name: evidence.jobs[0].name,
+          status: evidence.jobs[0].status,
+          conclusion: evidence.jobs[0].conclusion,
+          head_sha: evidence.jobs[0].headSha,
+          run_id: evidence.jobs[0].runId,
+          run_attempt: evidence.jobs[0].runAttempt,
+        }] } };
+      }
+      if (path.includes(`/check-suites/${evidence.checkSuiteId}`)) {
+        return { data: {
+          id: evidence.checkSuite.id,
+          repository: { id: evidence.checkSuite.repositoryId },
+          app: { id: evidence.checkSuite.appId, slug: evidence.checkSuite.appSlug },
+          head_sha: evidence.checkSuite.headSha,
+          head_branch: evidence.checkSuite.headBranch,
+          after: evidence.checkSuite.after,
+          status: evidence.checkSuite.status,
+          conclusion: evidence.checkSuite.conclusion,
+          pull_requests: [],
+        } };
+      }
+      throw new Error(`unexpected path ${path}`);
+    },
+  };
+}
+
+test('main-push CI retains exact run-attempt, Check Suite, and job evidence', async () => {
+  const evidence = await exactMainPushCi(mainPushCiApiFixture(), '/repos/example/repo', HEAD_SHA);
+  assert.equal(evidence.id, 8801);
+  assert.equal(evidence.runAttempt, 1);
+  assert.deepEqual(evidence.checkSuite, programActivationCiEvidence(HEAD_SHA).checkSuite);
+  assert.deepEqual(evidence.jobs, programActivationCiEvidence(HEAD_SHA).jobs);
+});
+
+test('program snapshot stability includes same-run attempt, Check Suite, and job changes', () => {
+  const first = makeProgramSnapshot();
+  assert.doesNotThrow(() => assertStableSnapshots(first, structuredClone(first)));
+
+  for (const mutate of [
+    (snapshot) => {
+      snapshot.program.root.activationCi.runAttempt = 2;
+      snapshot.program.root.activationCi.jobs[0].runAttempt = 2;
+    },
+    (snapshot) => {
+      snapshot.program.root.activationCi.checkSuiteId = 8812;
+      snapshot.program.root.activationCi.checkSuite.id = 8812;
+    },
+    (snapshot) => { snapshot.program.root.activationCi.jobs[0].id = 8822; },
+  ]) {
+    const closing = structuredClone(first);
+    mutate(closing);
+    assert.equal(closing.program.root.activationCi.id, first.program.root.activationCi.id);
+    assert.throws(
+      () => assertStableSnapshots(first, closing),
+      /SNAPSHOT_CHANGED_DURING_READ/u,
+    );
+  }
+});
 
 test('latest CI accepts the observed empty Check Suite PR list and ignores all-zero suite.before', async () => {
   const ci = await latestCi(ciApiFixture(), '/repos/example/repo', {
