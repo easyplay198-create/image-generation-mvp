@@ -17,6 +17,7 @@ import {
   resolvePrNumber,
   sha256Text,
   validateHistoricalProgramLifecycle,
+  validateHistoricalProgramReviews,
   validateProgramRootApprovalTiming,
 } from './autonomous-control-gate-v2.mjs';
 
@@ -501,6 +502,7 @@ function makeProgramOrdinal3Snapshot() {
     },
     mergeParentValid: true,
     exactConsumptionValid: true,
+    evidenceDigest: 'd'.repeat(64),
     activationCi: {
       status: 'completed',
       conclusion: 'success',
@@ -637,14 +639,30 @@ test('program permanently expires a child after pre-merge PR or Issue terminatio
     { event: 'closed', createdAt: '2026-09-05T00:00:30Z', actor: owner() },
     { event: 'reopened', createdAt: '2026-09-05T00:00:31Z', actor: owner() },
   ];
-  assert.match(holdReason(prReopened), /PROGRAM_PREMERGE_TERMINATION_EXPIRED:closed/u);
+  assert.match(holdReason(prReopened), /PROGRAM_PERMANENT_HISTORY_EXPIRED:closed/u);
 
   const issueReopened = makeProgramSnapshot();
   issueReopened.issueTimeline = [
     { event: 'closed', createdAt: '2026-09-05T00:00:30Z', actor: owner() },
     { event: 'reopened', createdAt: '2026-09-05T00:00:31Z', actor: owner() },
   ];
-  assert.match(holdReason(issueReopened), /PROGRAM_PREMERGE_TERMINATION_EXPIRED:closed/u);
+  assert.match(holdReason(issueReopened), /PROGRAM_PERMANENT_HISTORY_EXPIRED:closed/u);
+});
+
+test('program permanently rejects branch deletion, force-push, and base-history rewrites', () => {
+  for (const event of [
+    'head_ref_deleted',
+    'head_ref_restored',
+    'head_ref_force_pushed',
+    'base_ref_changed',
+    'base_ref_deleted',
+    'base_ref_force_pushed',
+    'automatic_base_change_succeeded',
+  ]) {
+    const snapshot = makeProgramSnapshot();
+    snapshot.prTimeline = [{ event, createdAt: '2026-09-05T00:00:30Z', actor: owner() }];
+    assert.match(holdReason(snapshot), new RegExp(`PROGRAM_PERMANENT_HISTORY_EXPIRED:${event}`, 'u'));
+  }
 });
 
 test('ordinal 3 revalidates exact historical child consumption and main-push CI', () => {
@@ -659,6 +677,10 @@ test('ordinal 3 revalidates exact historical child consumption and main-push CI'
   const wrongActivation = makeProgramOrdinal3Snapshot();
   wrongActivation.program.bindings[1].activationCi.headSha = '9'.repeat(40);
   assert.match(holdReason(wrongActivation), /PROGRAM_PRIOR_CHILD_NOT_EXACTLY_CONSUMED/u);
+
+  const missingDigest = makeProgramOrdinal3Snapshot();
+  delete missingDigest.program.bindings[1].evidenceDigest;
+  assert.match(holdReason(missingDigest), /PROGRAM_PRIOR_CHILD_NOT_EXACTLY_CONSUMED/u);
 });
 
 test('historical lifecycle permits merge-caused close but rejects pre-merge termination', () => {
@@ -675,7 +697,29 @@ test('historical lifecycle permits merge-caused close but rejects pre-merge term
       [ready, { event: 'closed', createdAt: '2026-09-05T00:04:59Z', actor: owner() }],
       [],
     ),
-    /PROGRAM_PRIOR_CHILD_PREMERGE_TERMINATION:closed/u,
+    /PROGRAM_PRIOR_CHILD_PERMANENT_HISTORY_INVALID:closed/u,
+  );
+});
+
+test('historical independent reviews must exist before the exact merge', () => {
+  const pr = { mergedAt: '2026-09-05T00:05:00Z' };
+  assert.doesNotThrow(() => validateHistoricalProgramReviews(
+    [{ commentCreatedAt: '2026-09-05T00:04:59Z', reviewedAt: '2026-09-05T00:04:58Z' }],
+    pr,
+  ));
+  assert.throws(
+    () => validateHistoricalProgramReviews(
+      [{ commentCreatedAt: '2026-09-05T00:06:00Z', reviewedAt: '2026-09-05T00:05:59Z' }],
+      pr,
+    ),
+    /PROGRAM_PRIOR_CHILD_REVIEW_NOT_PREMERGE/u,
+  );
+  assert.throws(
+    () => validateHistoricalProgramReviews(
+      [{ commentCreatedAt: '2026-09-05T00:04:58Z', reviewedAt: '2026-09-05T00:04:59Z' }],
+      pr,
+    ),
+    /PROGRAM_PRIOR_CHILD_REVIEW_NOT_PREMERGE/u,
   );
 });
 

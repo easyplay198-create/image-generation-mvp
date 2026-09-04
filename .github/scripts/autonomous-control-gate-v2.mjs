@@ -125,7 +125,9 @@ const CI_INVALIDATING_PR_EVENTS = new Set([
   'head_ref_restored',
   'reopened',
 ]);
-const PROGRAM_PREMERGE_TERMINATION_EVENTS = new Set(['closed', 'reopened']);
+const PROGRAM_PERMANENT_INVALIDATING_EVENTS = new Set(
+  [...CI_INVALIDATING_PR_EVENTS].filter((event) => event !== 'ready_for_review'),
+);
 
 function hold(reasons, details = {}) {
   return {
@@ -550,7 +552,10 @@ function validateProgramReview(comments, binding, pr) {
   for (const comment of comments) {
     if (!mentionsMarker(comment.body, PROGRAM_REVIEW_MARKER)) continue;
     if (!isOwner(comment.user, comment.authorAssociation)) continue;
-    if (!comment.createdAt || comment.createdAt !== comment.updatedAt) {
+    if (
+      !comment.createdAt || comment.createdAt !== comment.updatedAt ||
+      !Number.isFinite(Date.parse(comment.createdAt))
+    ) {
       throw new Error('PROGRAM_REVIEW_EDITED_OR_TIME_MISSING');
     }
     const review = extractMarkedJson(comment.body, PROGRAM_REVIEW_MARKER);
@@ -567,12 +572,13 @@ function validateProgramReview(comments, binding, pr) {
       !Array.isArray(review.findings) ||
       review.findings.length !== 0 ||
       !isIsoInstant(review.reviewedAt) ||
+      Date.parse(review.reviewedAt) > Date.parse(comment.createdAt) ||
       !/^reviewer-[a-z0-9-]{16,128}$/u.test(review.reviewerSessionId) ||
       review.reviewerSessionId === binding.orchestratorSessionId
     ) {
       continue;
     }
-    current.push(review);
+    current.push({ ...review, commentCreatedAt: comment.createdAt, commentId: comment.id });
   }
   const expectedCount = binding.childOrdinal === 3 ? 2 : 1;
   if (
@@ -1236,6 +1242,7 @@ function validateProgramHistory(program, currentBinding) {
     entry.pr?.head?.ref !== entry.binding.authorizedHeadRef ||
     !isCommitSha(entry.pr?.head?.sha) ||
     entry.mergeParentValid !== true || entry.exactConsumptionValid !== true ||
+    !isSha256(entry.evidenceDigest) ||
     entry.activationCi?.status !== 'completed' ||
     entry.activationCi?.conclusion !== 'success' ||
     entry.activationCi?.headSha !== entry.pr?.mergeCommitSha
@@ -1262,11 +1269,11 @@ function validateProgramTimeline(snapshot) {
   const issueTimeline = snapshot.issueTimeline ?? [];
   if (!Array.isArray(issueTimeline)) throw new Error('PROGRAM_ISSUE_TIMELINE_RESPONSE_SHAPE_INVALID');
   for (const item of [...timeline, ...issueTimeline]) {
-    if (!PROGRAM_PREMERGE_TERMINATION_EVENTS.has(item.event)) continue;
+    if (!PROGRAM_PERMANENT_INVALIDATING_EVENTS.has(item.event)) continue;
     if (!Number.isFinite(Date.parse(item.createdAt))) {
       throw new Error('PROGRAM_TERMINATION_TIMESTAMP_INVALID');
     }
-    throw new Error(`PROGRAM_PREMERGE_TERMINATION_EXPIRED:${item.event}`);
+    throw new Error(`PROGRAM_PERMANENT_HISTORY_EXPIRED:${item.event}`);
   }
   if (converted.length > 0 || ready.length > 1) {
     throw new Error('PROGRAM_PR_LIFECYCLE_HISTORY_INVALID');
@@ -1960,6 +1967,7 @@ function normalizeHistoricalPull(pr) {
     merged: pr.merged === true || Boolean(pr.merged_at),
     mergeable: pr.mergeable,
     createdAt: pr.created_at,
+    updatedAt: pr.updated_at,
     mergedAt: pr.merged_at,
     mergeCommitSha: pr.merge_commit_sha ?? null,
     body: pr.body ?? '',
@@ -1986,12 +1994,29 @@ export function validateHistoricalProgramLifecycle(pr, prTimeline, issueTimeline
     throw new Error('PROGRAM_PRIOR_CHILD_READY_HISTORY_INVALID');
   }
   for (const item of [...prTimeline, ...issueTimeline]) {
-    if (!PROGRAM_PREMERGE_TERMINATION_EVENTS.has(item.event)) continue;
+    if (!PROGRAM_PERMANENT_INVALIDATING_EVENTS.has(item.event)) continue;
     const createdAt = Date.parse(item.createdAt);
     if (!Number.isFinite(createdAt)) throw new Error('PROGRAM_PRIOR_CHILD_TIMELINE_TIME_INVALID');
-    if (item.event === 'reopened' || createdAt < mergedAt) {
-      throw new Error(`PROGRAM_PRIOR_CHILD_PREMERGE_TERMINATION:${item.event}`);
+    if (item.event !== 'closed' || createdAt < mergedAt) {
+      throw new Error(`PROGRAM_PRIOR_CHILD_PERMANENT_HISTORY_INVALID:${item.event}`);
     }
+  }
+}
+
+export function validateHistoricalProgramReviews(reviews, pr) {
+  const mergedAt = Date.parse(pr.mergedAt);
+  if (!Number.isFinite(mergedAt)) throw new Error('PROGRAM_PRIOR_CHILD_MERGED_AT_INVALID');
+  if (
+    !Array.isArray(reviews) || reviews.length === 0 ||
+    reviews.some((review) => (
+      !Number.isFinite(Date.parse(review.commentCreatedAt)) ||
+      !Number.isFinite(Date.parse(review.reviewedAt)) ||
+      Date.parse(review.commentCreatedAt) >= mergedAt ||
+      Date.parse(review.reviewedAt) >= mergedAt ||
+      Date.parse(review.reviewedAt) > Date.parse(review.commentCreatedAt)
+    ))
+  ) {
+    throw new Error('PROGRAM_PRIOR_CHILD_REVIEW_NOT_PREMERGE');
   }
 }
 
@@ -2030,7 +2055,7 @@ async function loadHistoricalProgramChildEvidence(
     throw new Error('PROGRAM_PRIOR_CHILD_IDENTITY_INVALID');
   }
   const issueNormalized = { number: issue.number, body: issue.body ?? '' };
-  validateProgramLink(
+  const link = validateProgramLink(
     extractMarkedJson(historicalPr.body, PROGRAM_LINK_MARKER),
     binding,
     issueNormalized,
@@ -2069,13 +2094,37 @@ async function loadHistoricalProgramChildEvidence(
     throw new Error('PROGRAM_PRIOR_CHILD_CI_NOT_SUCCESS');
   }
   const comments = prCommentsRaw.map(normalizeComment).sort((a, b) => a.id - b.id);
-  validateProgramReview(comments, binding, historicalPr);
+  const reviews = validateProgramReview(comments, binding, historicalPr);
+  validateHistoricalProgramReviews(reviews, historicalPr);
+  const prTimeline = normalizeProgramTimeline(prTimelineRaw);
+  const issueTimeline = normalizeProgramTimeline(issueTimelineRaw);
   validateHistoricalProgramLifecycle(
     historicalPr,
-    normalizeProgramTimeline(prTimelineRaw),
-    normalizeProgramTimeline(issueTimelineRaw),
+    prTimeline,
+    issueTimeline,
   );
-  return { activationCi, exactConsumptionValid: true };
+  const evidenceDigest = sha256Text(JSON.stringify({
+    activationCi,
+    baseCommitSha: baseCommit.sha,
+    baseTreeSha: baseCommit.tree.sha,
+    changedFiles,
+    ci,
+    headCommitSha: headCommit.sha,
+    headTreeSha: headCommit.tree.sha,
+    issue: {
+      bodySha256: sha256Text(issueNormalized.body),
+      number: issue.number,
+      state: issue.state,
+      updatedAt: issue.updated_at,
+      user: normalizeUser(issue.user),
+    },
+    issueTimeline,
+    link,
+    pr: { ...historicalPr, bodySha256: sha256Text(historicalPr.body) },
+    prTimeline,
+    reviews,
+  }));
+  return { activationCi, evidenceDigest, exactConsumptionValid: true };
 }
 
 async function mergeParentIsExact(api, repositoryPath, pr) {
