@@ -83,6 +83,7 @@ const PROGRAM_CHILD_3_FIXED_PATHS = Object.freeze([
   'src/tasks/asset-task.ts',
   'src/tasks/internal-asset-task-execution.ts',
   'tests/integration/p2-s1i-internal-attempt-artifact-lineage.test.ts',
+  'tests/integration/p2-s1h-internal-single-image-asset-task.test.ts',
   'tests/unit/p2-internal-attempt-artifact-api.test.ts',
 ]);
 const PROGRAM_CHILD_3_MIGRATION =
@@ -1266,6 +1267,112 @@ const S1I_REPAIR_PATHS = [
   'docs/governance/GITHUB_AUTONOMOUS_DEVELOPMENT_CONTROL_PLANE_V2.md',
 ];
 
+export const S1I_PR3_REFREEZE = Object.freeze({
+  oldBaseSha: 'c46ba6af717628e528b71f2e335c6b5aa37ab407',
+  oldIssueBodySha256: '1b8907c0134a385ea6395717251dc09ea641a6a63f9a4f50b39b1d4636b091c9',
+  legacyEnumTestPath: 'tests/integration/p2-s1h-internal-single-image-asset-task.test.ts',
+  legacyEnumTestSha256: '8c266a8622e64cf17a8b467a33736e45857e8615fc43c3d0e5fa2fc9190d60e6',
+  repairIssueNumber: 62,
+  repairBranch: 'codex/s1i-pr3-scope-refreeze-v1-c46ba6af',
+  issueNumber: 61,
+  childBranch: 'codex/p2-s1i-internal-attempt-artifact-v1-c46ba6af',
+  migrationId: 'AI_VISION_V5_S1I_PR3_SCOPE_REFREEZE_AND_LEGACY_ENUM_TEST_MIGRATION_V1',
+});
+const S1I_PR3_REFREEZE_MARKER = 'S1I_PR3_SCOPE_REFREEZE_JSON';
+const S1I_PR3_LEGACY_ENUM_EXPECTATION =
+  '      { name: "AssetTaskStatus", labels: ["QUEUED"] },';
+const S1I_PR3_REFROZEN_ENUM_EXPECTATION =
+  '      { name: "AssetTaskStatus", labels: ["QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "HARD_BLOCKED"] },';
+const S1I_PR3_REFREEZE_PATHS = Object.freeze([
+  '.github/scripts/autonomous-control-gate-v2.mjs',
+  '.github/scripts/autonomous-control-gate-v2.test.mjs',
+  'AGENTS.md',
+  'docs/governance/GITHUB_AUTONOMOUS_DEVELOPMENT_CONTROL_PLANE_V2.md',
+  'docs/governance/V5_P2_ENTRY_GOVERNANCE.md',
+]);
+
+export function validateS1iPr3LegacyEnumTestMigration(oldBytes, headBytes) {
+  if (!Buffer.isBuffer(oldBytes) || !Buffer.isBuffer(headBytes)) return false;
+  const oldText = oldBytes.toString('utf8');
+  if (Buffer.from(oldText, 'utf8').compare(oldBytes) !== 0) return false;
+  const first = oldText.indexOf(S1I_PR3_LEGACY_ENUM_EXPECTATION);
+  if (first < 0 || oldText.indexOf(S1I_PR3_LEGACY_ENUM_EXPECTATION, first + 1) >= 0) return false;
+  const expected = oldText.slice(0, first) + S1I_PR3_REFROZEN_ENUM_EXPECTATION +
+    oldText.slice(first + S1I_PR3_LEGACY_ENUM_EXPECTATION.length);
+  return Buffer.from(expected, 'utf8').compare(headBytes) === 0;
+}
+
+export function validateS1iPr3Refreeze(evidence, child) {
+  const { record, comment, repair, mergeCommit, headCommit, ci, activationCi } = evidence ?? {};
+  if (!record) throw new Error('S1I_PR3_REFREEZE_MISSING');
+  exactKeys(record, [
+    'schema', 'migrationId', 'programId', 'issueNumber', 'oldBaseSha', 'newBaseSha',
+    'repairIssueNumber', 'repairPrNumber', 'repairMergeSha', 'childBranch',
+    'legacyEnumTestPath', 'legacyEnumTestSha256', 'oldIssueBodySha256',
+    'newIssueBodySha256', 'grantId', 'nonce', 'consumptionState',
+  ], 'S1I_PR3_REFREEZE');
+  if (
+    record.schema !== 's1i-pr3-scope-refreeze-v1' ||
+    record.migrationId !== S1I_PR3_REFREEZE.migrationId ||
+    record.programId !== PROGRAM_ID ||
+    record.issueNumber !== S1I_PR3_REFREEZE.issueNumber ||
+    record.oldBaseSha !== S1I_PR3_REFREEZE.oldBaseSha ||
+    record.repairIssueNumber !== S1I_PR3_REFREEZE.repairIssueNumber ||
+    record.newBaseSha !== record.repairMergeSha ||
+    !isCommitSha(record.newBaseSha) || record.newBaseSha === record.oldBaseSha ||
+    record.childBranch !== S1I_PR3_REFREEZE.childBranch ||
+    record.legacyEnumTestPath !== S1I_PR3_REFREEZE.legacyEnumTestPath ||
+    record.legacyEnumTestSha256 !== S1I_PR3_REFREEZE.legacyEnumTestSha256 ||
+    record.oldIssueBodySha256 !== S1I_PR3_REFREEZE.oldIssueBodySha256 ||
+    record.consumptionState !== 'CONSUMED' ||
+    child?.issueNumber !== record.issueNumber || child.binding?.childOrdinal !== 3 ||
+    child.binding.programId !== PROGRAM_ID || child.binding.authorizedHeadRef !== record.childBranch ||
+    child.binding.authorizedBaseSha !== record.newBaseSha ||
+    child.binding.expectedBaseSha !== record.newBaseSha ||
+    child.binding.previousMergeSha !== record.newBaseSha ||
+    child.binding.grantId !== record.grantId || child.binding.nonce !== record.nonce ||
+    record.newIssueBodySha256 !== evidence.issueBodySha256 ||
+    !isSha256(record.newIssueBodySha256) ||
+    !child.binding.exactAllowedPaths.includes(S1I_PR3_REFREEZE.legacyEnumTestPath) ||
+    !isOwner(comment?.user, comment?.authorAssociation) ||
+    !Number.isInteger(comment?.id) || comment.id < 1 ||
+    !isIsoInstant(comment.createdAt) || comment.createdAt !== comment.updatedAt ||
+    !repair || repair.number !== record.repairPrNumber || repair.merged !== true ||
+    repair.state !== 'closed' || !isOwnerIdentity(repair.user) ||
+    repair.base?.sha !== record.oldBaseSha || repair.base.ref !== POLICY.defaultBranch ||
+    repair.base.repoId !== POLICY.repositoryId || repair.head?.repoId !== POLICY.repositoryId ||
+    repair.head.ref !== S1I_PR3_REFREEZE.repairBranch ||
+    repair.mergeCommitSha !== record.newBaseSha ||
+    mergeCommit?.sha !== record.newBaseSha || mergeCommit.parents?.length !== 1 ||
+    mergeCommit.parents[0]?.sha !== record.oldBaseSha ||
+    headCommit?.sha !== repair.head.sha || !isCommitSha(headCommit?.tree?.sha) ||
+    mergeCommit.tree?.sha !== headCommit.tree.sha ||
+    evidence.repairIdentityAndScopeValid !== true ||
+    evidence.legacyTestFrozen !== true || evidence.legacyTestDeltaValid !== true ||
+    Date.parse(comment.createdAt) <= Date.parse(activationCi?.createdAt) ||
+    Date.parse(comment.createdAt) <= Date.parse(repair.mergedAt)
+  ) throw new Error('S1I_PR3_REFREEZE_BINDING_OR_HISTORY_INVALID');
+  validateProgramActivationCiEvidence(activationCi, record.newBaseSha);
+  const prCompletedAt = ci?.jobs?.[0]?.completedAt;
+  const activationCompletedAt = activationCi?.jobs?.[0]?.completedAt;
+  if (!isIsoInstant(evidence.approvalCreatedAt) || !isIsoInstant(repair.mergedAt) ||
+      !isIsoInstant(prCompletedAt) || !isIsoInstant(activationCompletedAt) ||
+      Date.parse(evidence.approvalCreatedAt) >= Date.parse(repair.mergedAt) ||
+      Date.parse(ci.createdAt) >= Date.parse(repair.mergedAt) ||
+      Date.parse(prCompletedAt) <= Date.parse(ci.createdAt) ||
+      Date.parse(prCompletedAt) >= Date.parse(repair.mergedAt) ||
+      Date.parse(activationCi.createdAt) < Date.parse(repair.mergedAt) ||
+      Date.parse(activationCompletedAt) <= Date.parse(activationCi.createdAt) ||
+      Date.parse(activationCompletedAt) >= Date.parse(comment.createdAt)) {
+    throw new Error('S1I_PR3_REFREEZE_CI_TIMING_INVALID');
+  }
+  validateHistoricalProgramLifecycle(repair, evidence.prTimeline, evidence.issueTimeline);
+  if (validateCi(ci, repair, evidence.approvalCreatedAt) !== 'success') {
+    throw new Error('S1I_PR3_REFREEZE_CI_NOT_SUCCESS');
+  }
+  return record.newBaseSha;
+}
+
 export function validateS1iMigration(evidence, child) {
   const { record, comment, repair, mergeCommit, headCommit, ci, activationCi } = evidence ?? {};
   if (!record) throw new Error('S1I_MIGRATION_MISSING');
@@ -1384,7 +1491,10 @@ export function validateProgramHistory(program, currentBinding) {
   }
   const expectedPreviousMerge = currentBinding.childOrdinal === 2
     ? child2Previous
-    : priorChildren.at(-1)?.pr?.mergeCommitSha;
+    : program.pr3Refreeze || currentBinding.authorizedBaseSha !== priorChildren.at(-1)?.pr?.mergeCommitSha
+      ? validateS1iPr3Refreeze(program.pr3Refreeze, relevant.find((entry) =>
+        entry.binding.childOrdinal === 3))
+      : priorChildren.at(-1)?.pr?.mergeCommitSha;
   if (
     !isCommitSha(expectedPreviousMerge) ||
     currentBinding.previousMergeSha !== expectedPreviousMerge ||
@@ -2428,6 +2538,90 @@ export async function loadS1iMigration(api, repositoryPath, child, issue) {
   return evidence;
 }
 
+export async function loadS1iPr3Refreeze(api, repositoryPath, child, issue) {
+  const comments = (await api.list(`${repositoryPath}/issues/${S1I_PR3_REFREEZE.issueNumber}/comments`))
+    .map(normalizeComment).filter((comment) =>
+      isOwnerIdentity(comment.user) && mentionsMarker(comment.body, S1I_PR3_REFREEZE_MARKER));
+  if (comments.length === 0 && child.binding.authorizedBaseSha === S1I_PR3_REFREEZE.oldBaseSha) return null;
+  if (comments.length !== 1) throw new Error('S1I_PR3_REFREEZE_RECORD_COUNT_INVALID');
+  const comment = comments[0];
+  const record = extractMarkedJson(comment.body, S1I_PR3_REFREEZE_MARKER);
+  const pulls = await api.list(`${repositoryPath}/pulls?state=all&head=${encodeURIComponent(
+    `${POLICY.owner.login}:${S1I_PR3_REFREEZE.repairBranch}`)}`);
+  if (pulls.length !== 1 || pulls[0].number !== record.repairPrNumber) {
+    throw new Error('S1I_PR3_REFREEZE_REPAIR_PR_NOT_UNIQUE');
+  }
+  const [{ data: rawRepair }, { data: repairIssue }, repairComments, repairIssueComments,
+    prTimelineRaw, issueTimelineRaw] = await Promise.all([
+    api.request(`${repositoryPath}/pulls/${record.repairPrNumber}`),
+    api.request(`${repositoryPath}/issues/${S1I_PR3_REFREEZE.repairIssueNumber}`),
+    api.list(`${repositoryPath}/issues/${record.repairPrNumber}/comments`),
+    api.list(`${repositoryPath}/issues/${S1I_PR3_REFREEZE.repairIssueNumber}/comments`),
+    api.list(`${repositoryPath}/issues/${record.repairPrNumber}/timeline`),
+    api.list(`${repositoryPath}/issues/${S1I_PR3_REFREEZE.repairIssueNumber}/timeline`),
+  ]);
+  const repair = normalizeHistoricalPull(rawRepair);
+  if (!isOwnerIdentity(repairIssue.user) || repairIssue.pull_request ||
+      repairIssue.number !== S1I_PR3_REFREEZE.repairIssueNumber || !repair.merged) {
+    throw new Error('S1I_PR3_REFREEZE_REPAIR_ISSUE_INVALID');
+  }
+  const contract = validateContract(extractMarkedJson(repairIssue.body, CONTRACT_MARKER));
+  if (contract.taskClass !== 'CONTROL_PLANE_CHANGE' ||
+      contract.authorizedBaseSha !== S1I_PR3_REFREEZE.oldBaseSha) {
+    throw new Error('S1I_PR3_REFREEZE_REPAIR_CONTRACT_INVALID');
+  }
+  exactStringSet(contract.allowedPaths, S1I_PR3_REFREEZE_PATHS, 'S1I_PR3_REFREEZE_REPAIR_PATHS');
+  const digest = sha256Text(repairIssue.body);
+  const link = validateLink(repair, repairIssue, contract, digest);
+  const approval = currentApproval(
+    repairIssueComments.map(normalizeComment), link.approvalCommentId, contract, digest);
+  const [{ data: mergeCommit }, { data: headCommit }, ci, activationCi, scopeValid,
+    { data: legacyTest }, { data: migratedLegacyTest }] = await Promise.all([
+    api.request(`${repositoryPath}/git/commits/${repair.mergeCommitSha}`),
+    api.request(`${repositoryPath}/git/commits/${repair.head.sha}`),
+    latestCi(api, repositoryPath, repair),
+    exactMainPushCi(api, repositoryPath, repair.mergeCommitSha),
+    validateProgramRootPull(api, repositoryPath, repair, {
+      authorizedBaseSha: S1I_PR3_REFREEZE.oldBaseSha,
+      authorizedHeadRef: S1I_PR3_REFREEZE.repairBranch,
+      exactAllowedPaths: S1I_PR3_REFREEZE_PATHS,
+    }),
+    api.request(`${repositoryPath}/contents/${S1I_PR3_REFREEZE.legacyEnumTestPath}` +
+      `?ref=${S1I_PR3_REFREEZE.oldBaseSha}`),
+    api.request(`${repositoryPath}/contents/${S1I_PR3_REFREEZE.legacyEnumTestPath}` +
+      `?ref=${child.pr.head.sha}`),
+  ]);
+  const reviews = validateProgramReview(repairComments.map(normalizeComment), {
+    programId: PROGRAM_ID,
+    childOrdinal: 2,
+    orchestratorSessionId: 'orchestrator-s1i-pr3-refreeze-builder-v1',
+  }, repair);
+  validateHistoricalProgramReviews(reviews, repair);
+  const legacyBytes = legacyTest?.type === 'file' && legacyTest.encoding === 'base64'
+    ? Buffer.from(legacyTest.content, 'base64') : null;
+  const migratedLegacyBytes = migratedLegacyTest?.type === 'file' &&
+    migratedLegacyTest.encoding === 'base64'
+    ? Buffer.from(migratedLegacyTest.content, 'base64') : null;
+  const evidence = {
+    record, comment, repair, mergeCommit, headCommit, ci, activationCi,
+    prTimeline: normalizeProgramTimeline(prTimelineRaw),
+    issueTimeline: normalizeProgramTimeline(issueTimelineRaw),
+    approvalCreatedAt: approval.createdAt,
+    approval,
+    reviews,
+    repairIssueBodySha256: digest,
+    issueBodySha256: sha256Text(issue.body),
+    repairIdentityAndScopeValid: scopeValid,
+    legacyTestFrozen: legacyBytes !== null &&
+      createHash('sha256').update(legacyBytes).digest('hex') ===
+        S1I_PR3_REFREEZE.legacyEnumTestSha256,
+    legacyTestDeltaValid: legacyBytes !== null && migratedLegacyBytes !== null &&
+      validateS1iPr3LegacyEnumTestMigration(legacyBytes, migratedLegacyBytes),
+  };
+  validateS1iPr3Refreeze(evidence, child);
+  return evidence;
+}
+
 async function loadProgramContext(api, repositoryPath, currentIssue, normalizedPr, programLink, observedAt) {
   const binding = validateProgramChildBinding(
     extractMarkedJson(currentIssue.body ?? '', PROGRAM_BINDING_MARKER),
@@ -2526,8 +2720,12 @@ async function loadProgramContext(api, repositoryPath, currentIssue, normalizedP
   const child2Issue = bindingIssues.find((entry) => entry.binding.childOrdinal === 2)?.issue;
   const migration = child2 && rootPr.mergeCommitSha === S1I_REPAIR.oldBaseSha
     ? await loadS1iMigration(api, repositoryPath, child2, child2Issue) : null;
+  const child3 = history.find((entry) => entry.binding.childOrdinal === 3);
+  const pr3Refreeze = child3 && child3.binding.authorizedBaseSha !== child2?.pr?.mergeCommitSha
+    ? await loadS1iPr3Refreeze(api, repositoryPath, child3, currentIssue) : null;
   return {
     migration,
+    pr3Refreeze,
     binding,
     link: programLink,
     now: observedAt,

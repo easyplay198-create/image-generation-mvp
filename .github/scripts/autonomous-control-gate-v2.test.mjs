@@ -6,6 +6,9 @@ import {
   POLICY,
   repositoryMergeCapabilities,
   S1I_REPAIR,
+  S1I_PR3_REFREEZE,
+  validateS1iPr3LegacyEnumTestMigration,
+  validateS1iPr3Refreeze,
   validateS1iMigration,
   loadS1iMigration,
   validateProgramHistory,
@@ -269,6 +272,7 @@ function programChild3Paths() {
     'src/tasks/asset-task.ts',
     'src/tasks/internal-asset-task-execution.ts',
     'tests/integration/p2-s1i-internal-attempt-artifact-lineage.test.ts',
+    'tests/integration/p2-s1h-internal-single-image-asset-task.test.ts',
     'tests/unit/p2-internal-attempt-artifact-api.test.ts',
   ];
 }
@@ -693,7 +697,7 @@ test('complete snapshots detect repository capability and current CI attempt, su
   }
 });
 
-test('ordinal 3 requires two distinct exact-Head reviewers and the frozen nine paths', () => {
+test('ordinal 3 requires two distinct exact-Head reviewers and the frozen ten paths', () => {
   const snapshot = makeProgramOrdinal3Snapshot();
   const result = evaluateProgramChildSnapshot(snapshot);
   assert.equal(result.result, 'PASS');
@@ -2707,6 +2711,134 @@ test('migration never permits a second target, old-base replay or unrelated main
     mutate(child);
     assert.throws(() => validateS1iMigration(evidence, child), /S1I_MIGRATION/u);
   }
+});
+
+function pr3RefreezeFixture() {
+  const repairSnapshot = makeProgramSnapshot();
+  const newBase = '8'.repeat(40);
+  Object.assign(repairSnapshot.pr, {
+    number: 63,
+    state: 'closed',
+    draft: false,
+    merged: true,
+    mergedAt: '2026-09-05T00:05:00Z',
+    mergeCommitSha: newBase,
+  });
+  repairSnapshot.pr.base.sha = S1I_PR3_REFREEZE.oldBaseSha;
+  repairSnapshot.pr.head.ref = S1I_PR3_REFREEZE.repairBranch;
+  syncProgramCi(repairSnapshot);
+  repairSnapshot.ci.jobs[0].completedAt = '2026-09-05T00:04:00Z';
+  const activationCi = programActivationCiEvidence(newBase);
+  activationCi.jobs[0].completedAt = '2026-09-05T00:06:30Z';
+  const child = {
+    issueNumber: 61,
+    binding: {
+      childOrdinal: 3,
+      programId: PROGRAM_ID,
+      authorizedHeadRef: S1I_PR3_REFREEZE.childBranch,
+      authorizedBaseSha: newBase,
+      expectedBaseSha: newBase,
+      previousMergeSha: newBase,
+      grantId: `grant-${'a'.repeat(32)}`,
+      nonce: 'b'.repeat(32),
+      exactAllowedPaths: programChild3Paths(),
+    },
+  };
+  const record = {
+    schema: 's1i-pr3-scope-refreeze-v1',
+    migrationId: S1I_PR3_REFREEZE.migrationId,
+    programId: PROGRAM_ID,
+    issueNumber: 61,
+    oldBaseSha: S1I_PR3_REFREEZE.oldBaseSha,
+    newBaseSha: newBase,
+    repairIssueNumber: 62,
+    repairPrNumber: 63,
+    repairMergeSha: newBase,
+    childBranch: S1I_PR3_REFREEZE.childBranch,
+    legacyEnumTestPath: S1I_PR3_REFREEZE.legacyEnumTestPath,
+    legacyEnumTestSha256: S1I_PR3_REFREEZE.legacyEnumTestSha256,
+    oldIssueBodySha256: S1I_PR3_REFREEZE.oldIssueBodySha256,
+    newIssueBodySha256: 'c'.repeat(64),
+    grantId: child.binding.grantId,
+    nonce: child.binding.nonce,
+    consumptionState: 'CONSUMED',
+  };
+  const evidence = {
+    record,
+    comment: { id: 9920, user: owner(), authorAssociation: 'OWNER',
+      createdAt: '2026-09-05T00:07:00Z', updatedAt: '2026-09-05T00:07:00Z' },
+    repair: repairSnapshot.pr,
+    ci: repairSnapshot.ci,
+    mergeCommit: { sha: newBase, parents: [{ sha: S1I_PR3_REFREEZE.oldBaseSha }],
+      tree: { sha: 'd'.repeat(40) } },
+    headCommit: { sha: repairSnapshot.pr.head.sha, tree: { sha: 'd'.repeat(40) } },
+    activationCi,
+    approvalCreatedAt: '2026-09-04T00:00:00Z',
+    repairIdentityAndScopeValid: true,
+    legacyTestFrozen: true,
+    legacyTestDeltaValid: true,
+    issueBodySha256: record.newIssueBodySha256,
+    prTimeline: [{ event: 'ready_for_review', actor: owner(),
+      createdAt: '2026-09-05T00:04:30Z' }],
+    issueTimeline: [],
+  };
+  return { child, evidence };
+}
+
+test('PR3 refreeze accepts one exact repair edge and fails closed on replay or drift', () => {
+  const { child, evidence } = pr3RefreezeFixture();
+  assert.equal(validateS1iPr3Refreeze(evidence, child), evidence.record.newBaseSha);
+  const mutations = [
+    (e) => { e.record.oldBaseSha = '0'.repeat(40); },
+    (e) => { e.record.newBaseSha = '0'.repeat(40); },
+    (e) => { e.record.repairPrNumber += 1; },
+    (e) => { e.record.issueNumber += 1; },
+    (e) => { e.record.legacyEnumTestPath += '.other'; },
+    (e) => { e.record.legacyEnumTestSha256 = '0'.repeat(64); },
+    (e) => { e.record.oldIssueBodySha256 = '0'.repeat(64); },
+    (e) => { e.record.newIssueBodySha256 = '0'.repeat(64); },
+    (e) => { e.record.consumptionState = 'AVAILABLE'; },
+    (e) => { e.comment.updatedAt = '2026-09-05T00:08:00Z'; },
+    (e) => { e.repair.head.ref = 'other'; },
+    (e) => { e.mergeCommit.parents.push({ sha: '0'.repeat(40) }); },
+    (e) => { e.mergeCommit.tree.sha = '0'.repeat(40); },
+    (e) => { e.repairIdentityAndScopeValid = false; },
+    (e) => { e.legacyTestFrozen = false; },
+    (e) => { e.legacyTestDeltaValid = false; },
+    (e) => { e.activationCi.runAttempt += 1; },
+    (e) => { e.prTimeline.push({ event: 'head_ref_force_pushed',
+      createdAt: '2026-09-05T00:03:00Z' }); },
+  ];
+  for (const mutate of mutations) {
+    const fixture = pr3RefreezeFixture();
+    mutate(fixture.evidence);
+    assert.throws(() => validateS1iPr3Refreeze(fixture.evidence, fixture.child),
+      /S1I_PR3_REFREEZE|PROGRAM_/u);
+  }
+});
+
+test('PR3 legacy enum migration permits only the exact ordered expectation replacement', () => {
+  const oldText = [
+    'before',
+    '      { name: "AssetTaskStatus", labels: ["QUEUED"] },',
+    'after',
+    '',
+  ].join('\n');
+  const migrated = oldText.replace('["QUEUED"]',
+    '["QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "HARD_BLOCKED"]');
+  assert.equal(validateS1iPr3LegacyEnumTestMigration(
+    Buffer.from(oldText), Buffer.from(migrated)), true);
+  for (const invalid of [
+    migrated.replace('after', 'changed'),
+    migrated.replace('"QUEUED", ', ''),
+    migrated.replace('"HARD_BLOCKED"', '"HARD_BLOCKED", "OTHER"'),
+    oldText,
+  ]) {
+    assert.equal(validateS1iPr3LegacyEnumTestMigration(
+      Buffer.from(oldText), Buffer.from(invalid)), false);
+  }
+  assert.equal(validateS1iPr3LegacyEnumTestMigration(
+    Buffer.from(oldText + oldText), Buffer.from(migrated + migrated)), false);
 });
 
 test('P2 templates and governance freeze Draft-only task-scoped entry', async () => {
