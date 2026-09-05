@@ -602,7 +602,7 @@ describe.sequential("P2 S1H internal single-image AssetTask", () => {
     expect(enums).toEqual([
       { name: "AssetClass", labels: ["IMAGE"] },
       { name: "AssetTaskOutputPurpose", labels: ["INTERNAL_TEST"] },
-      { name: "AssetTaskStatus", labels: ["QUEUED"] },
+      { name: "AssetTaskStatus", labels: ["QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "HARD_BLOCKED"] },
       { name: "AssetTaskType", labels: ["INTERNAL_SINGLE_IMAGE"] },
     ]);
 

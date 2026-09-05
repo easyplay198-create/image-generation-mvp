@@ -1,3 +1,4 @@
+import { executeInternalAssetTask, readInternalArtifactContent, InternalExecutionError, INTERNAL_PNG, internalIdentifier, type InternalExecutionDependencies } from "@/src/tasks/internal-asset-task-execution";
 import { createHash, randomUUID } from "node:crypto";
 
 import { Prisma } from "@/src/generated/prisma/client";
@@ -27,7 +28,7 @@ const CREATE_BODY_KEYS = Object.freeze([
   "truthRevisionId",
 ]);
 
-type Dependencies = Readonly<{
+type Dependencies = InternalExecutionDependencies & Readonly<{
   database: DatabaseClient;
   principalResolver?: P2WorkspacePrincipalResolver;
   createRequestId?: () => string;
@@ -79,6 +80,29 @@ export function createP2AssetTaskHttpHandlers(dependencies: Dependencies) {
   const createRequestId = dependencies.createRequestId ?? randomUUID;
 
   return Object.freeze({
+    async execute(request: Request, context: AssetTaskRouteContext): Promise<Response> {
+      const requestId = createRequestId();
+      try {
+        const principal = await principalResolver.resolve();
+        const { projectId, assetTaskId } = await context.params;
+        internalIdentifier(projectId); internalIdentifier(assetTaskId);
+        if (request.headers.has("content-type") || request.headers.has("idempotency-key") || new URL(request.url).search || await request.text() !== "") throw new InternalExecutionError("VALIDATION_FAILED");
+        const output = await executeInternalAssetTask({ ...dependencies, principalResolver: frozenPrincipalResolver(principal) }, { projectId, assetTaskId }, requestId);
+        return Response.json({ assetTaskId: output.assetTaskId, status: output.state, requestId: output.requestId }, { status: output.status, headers: { Location: `/api/p2/projects/${encodeURIComponent(projectId)}/asset-tasks/${encodeURIComponent(assetTaskId)}`, "X-Request-Id": output.requestId, "Cache-Control": "private, no-store" } });
+      } catch (error) { return internalErrorResponse(error, requestId); }
+    },
+    async content(request: Request, context: Readonly<{ params: Promise<{ projectId: string; assetTaskId: string; artifactId: string; artifactRevisionId: string }> }>): Promise<Response> {
+      const requestId = createRequestId();
+      try {
+        const principal = await principalResolver.resolve();
+        const input = await context.params;
+        if (new URL(request.url).search) throw new InternalExecutionError("VALIDATION_FAILED");
+        const accept = request.headers.get("accept");
+        if (accept && !accept.split(",").some((part) => ["image/png", "image/*", "*/*"].includes(part.trim().split(";", 1)[0]) && !/;\s*q=0(?:\.0*)?(?:;|$)/.test(part))) throw new InternalExecutionError("NOT_ACCEPTABLE");
+        const bytes = await readInternalArtifactContent({ ...dependencies, principalResolver: frozenPrincipalResolver(principal) }, input);
+        return internalContentResponse(bytes, request, requestId);
+      } catch (error) { return internalErrorResponse(error, requestId); }
+    },
     async post(
       request: Request,
       context: ProjectRouteContext,
@@ -131,7 +155,7 @@ export function createP2AssetTaskHttpHandlers(dependencies: Dependencies) {
         );
         return Response.json({ assetTask: safeAssetTask(assetTask), requestId });
       } catch (error) {
-        return assetTaskErrorResponse(error, requestId);
+        return internalErrorResponse(error, requestId);
       }
     },
   });
@@ -463,8 +487,8 @@ function safeAssetTask(assetTask: P2AssetTaskResource) {
     productSourceSnapshotId: assetTask.productSourceSnapshotId,
     status: assetTask.status,
     createdAt: assetTask.createdAt.toISOString(),
-    generationAttemptSummary: null,
-    artifactRevisionSummary: null,
+    generationAttemptSummary: assetTask.generationAttemptSummary ?? null,
+    artifactRevisionSummary: assetTask.artifactRevisionSummary ?? null,
   });
 }
 
@@ -563,4 +587,55 @@ function validationFailed(): P2AssetTaskHttpError {
 
 function idempotencyConflict(): P2AssetTaskHttpError {
   return new P2AssetTaskHttpError("IDEMPOTENCY_CONFLICT");
+}
+
+const INTERNAL_ERRORS: Record<string, readonly [number, string, boolean, boolean, boolean]> = {
+  AUTH_REQUIRED: [401, "AUTHENTICATION", false, true, true],
+  FORBIDDEN_SCOPE: [403, "AUTHORIZATION", false, false, true],
+  VALIDATION_FAILED: [400, "INPUT", false, true, true],
+  TASK_CONFLICT: [409, "TASK_STATE", false, true, true],
+  ASSET_TASK_NOT_FOUND: [404, "RESOURCE", false, false, true],
+  ASSET_TASK_EXECUTION_FAILED: [409, "TASK_STATE", false, true, true],
+  ASSET_TASK_EXECUTION_AMBIGUOUS: [503, "TASK_STATE", false, true, true],
+  SERVICE_UNAVAILABLE: [503, "INTERNAL", true, false, false],
+  DATABASE_TRANSACTION_RETRY_REQUIRED: [503, "CONCURRENCY", true, false, false],
+  ASSET_TASK_CLAIM_LOCK_TIMEOUT: [503, "CONCURRENCY", true, false, false],
+  DATABASE_COMMIT_OUTCOME_UNKNOWN: [503, "CONCURRENCY", false, true, true],
+  ARTIFACT_NOT_FOUND: [404, "RESOURCE", false, false, true],
+  ARTIFACT_CONTENT_UNAVAILABLE: [502, "STORAGE_TRANSIENT", true, false, false],
+  ARTIFACT_CONTENT_INTEGRITY_MISMATCH: [502, "STORAGE_INTEGRITY", false, true, true],
+  NOT_ACCEPTABLE: [406, "INPUT", false, true, true],
+  RANGE_NOT_SATISFIABLE: [416, "INPUT", false, true, true],
+  INTERNAL_ERROR: [500, "INTERNAL", true, false, false],
+};
+
+export function internalErrorResponse(error: unknown, currentRequestId: string): Response {
+  const candidate = error instanceof InternalExecutionError || error instanceof P2AuthContextError || error instanceof P2AssetTaskError ? error.code : "INTERNAL_ERROR";
+  const code = Object.hasOwn(INTERNAL_ERRORS, candidate) ? candidate : "INTERNAL_ERROR";
+  const [status, category, retryable, userActionRequired, hardBlock] = INTERNAL_ERRORS[code];
+  const requestId = error instanceof InternalExecutionError ? error.durableRequestId ?? currentRequestId : currentRequestId;
+  return Response.json({ error: { code, category, retryable, userActionRequired, hardBlock, message: "The requested operation could not be completed.", requestId, details: {} } }, { status, headers: { "X-Request-Id": requestId, "Cache-Control": "private, no-store", ...(status === 416 ? { "Content-Range": "bytes */68" } : {}) } });
+}
+
+export function internalContentResponse(bytes: Uint8Array, request: Request, requestId: string): Response {
+  const etag = `"sha256-${INTERNAL_PNG.digest}"`;
+  const headers = new Headers({ "Content-Type": "image/png", "Content-Length": "68", "Content-Digest": `sha-256=:${INTERNAL_PNG.digestBase64}:`, ETag: etag, "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "X-Request-Id": requestId, "Accept-Ranges": "bytes" });
+  const conditions = request.headers.get("if-none-match")?.split(",").map((s) => s.trim().replace(/^W\//, ""));
+  if (conditions?.includes(etag) || conditions?.includes("*")) {
+    headers.delete("Content-Length");
+    return new Response(null, { status: 304, headers });
+  }
+  const range = request.headers.get("range");
+  if (range !== null) {
+    const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+    if (!match || !match[1] && !match[2]) throw new InternalExecutionError("RANGE_NOT_SATISFIABLE");
+    let start = match[1] ? Number(match[1]) : Math.max(0, 68 - Number(match[2]));
+    let end = match[1] && match[2] ? Math.min(67, Number(match[2])) : 67;
+    if (![start, end, ...(match[1] ? [Number(match[1])] : []), ...(match[2] ? [Number(match[2])] : [])].every(Number.isSafeInteger) || start > end || start >= 68 || !match[1] && Number(match[2]) === 0) throw new InternalExecutionError("RANGE_NOT_SATISFIABLE");
+    start = Math.max(0, start); end = Math.min(67, end);
+    headers.set("Content-Range", `bytes ${start}-${end}/68`);
+    headers.set("Content-Length", String(end - start + 1));
+    return new Response(Uint8Array.from(bytes.slice(start, end + 1)), { status: 206, headers });
+  }
+  return new Response(Uint8Array.from(bytes), { status: 200, headers });
 }
