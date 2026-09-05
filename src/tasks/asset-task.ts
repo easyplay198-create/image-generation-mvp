@@ -1,3 +1,4 @@
+import { internalIds, internalTaskSummaries } from "@/src/tasks/internal-asset-task-execution";
 import { randomUUID } from "node:crypto";
 
 import { Prisma } from "@/src/generated/prisma/client";
@@ -38,9 +39,11 @@ export type P2AssetTaskResource = Readonly<{
   outputPurpose: "INTERNAL_TEST";
   truthRevisionId: string;
   productSourceSnapshotId: string;
-  status: "QUEUED";
+  status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "HARD_BLOCKED";
   createdByActorId: string;
   createdAt: Date;
+  generationAttemptSummary?: Awaited<ReturnType<typeof internalTaskSummaries>>["generationAttemptSummary"];
+  artifactRevisionSummary?: Awaited<ReturnType<typeof internalTaskSummaries>>["artifactRevisionSummary"];
 }>;
 
 export async function createP2AssetTask(
@@ -127,6 +130,15 @@ export async function getP2AssetTaskInScope(
 ): Promise<P2AssetTaskResource> {
   const projectId = parseCanonicalIdentifier(input.projectId);
   const assetTaskId = parseCanonicalIdentifier(input.assetTaskId);
+  const locked = await transaction.$queryRaw<unknown[]>(Prisma.sql`
+    SELECT "assetTaskId"
+    FROM "AssetTask"
+    WHERE "workspaceId" = ${context.workspaceId}
+      AND "projectId" = ${projectId}
+      AND "assetTaskId" = ${assetTaskId}
+    FOR UPDATE
+  `);
+  if (locked.length !== 1) throw assetTaskNotFound();
   const assetTask = await transaction.assetTask.findFirst({
     where: {
       assetTaskId,
@@ -135,7 +147,21 @@ export async function getP2AssetTaskInScope(
     },
   });
   if (!assetTask) throw assetTaskNotFound();
-  return toAssetTaskResource(assetTask);
+  if (assetTask.status === "QUEUED") {
+    const ids = internalIds(assetTaskId);
+    const coherent = await transaction.$queryRaw<unknown[]>(Prisma.sql`
+      SELECT 1
+      WHERE NOT EXISTS (SELECT 1 FROM "GenerationAttempt" WHERE "workspaceId" = ${context.workspaceId} AND "projectId" = ${projectId} AND "assetTaskId" = ${assetTaskId})
+        AND NOT EXISTS (SELECT 1 FROM "GenerationAttemptSourceLink" WHERE "workspaceId" = ${context.workspaceId} AND "projectId" = ${projectId} AND "assetTaskId" = ${assetTaskId})
+        AND NOT EXISTS (SELECT 1 FROM "Artifact" WHERE "workspaceId" = ${context.workspaceId} AND "projectId" = ${projectId} AND "assetTaskId" = ${assetTaskId})
+        AND NOT EXISTS (SELECT 1 FROM "ArtifactRevision" WHERE "workspaceId" = ${context.workspaceId} AND "projectId" = ${projectId} AND "assetTaskId" = ${assetTaskId})
+        AND NOT EXISTS (SELECT 1 FROM "ArtifactRevisionSourceLink" WHERE "workspaceId" = ${context.workspaceId} AND "projectId" = ${projectId} AND "assetTaskId" = ${assetTaskId})
+        AND NOT EXISTS (SELECT 1 FROM "P2DomainEvent" WHERE "workspaceId" = ${context.workspaceId} AND "projectId" = ${projectId} AND ("eventId" IN (${ids.startedEvent}, ${ids.createdEvent}) OR "eventBody" ->> 'assetTaskId' = ${assetTaskId}))
+    `);
+    if (coherent.length !== 1) throw new Error("ASSET_TASK_GRAPH_INCONSISTENT");
+    return toAssetTaskResource(assetTask);
+  }
+  return { ...toAssetTaskResource(assetTask), ...await internalTaskSummaries(transaction, context, { projectId, assetTaskId }) };
 }
 
 function validateCreateInput(input: P2CreateAssetTaskInput): void {
@@ -207,7 +233,7 @@ type AssetTaskRecord = {
   outputPurpose: "INTERNAL_TEST";
   truthRevisionId: string;
   productSourceSnapshotId: string;
-  status: "QUEUED";
+  status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "HARD_BLOCKED";
   createdByActorId: string;
   createdAt: Date;
 };
