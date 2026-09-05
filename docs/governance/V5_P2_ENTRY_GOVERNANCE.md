@@ -202,7 +202,7 @@ This document and its companion control-plane changes establish bounded-converge
 
 After PR1's exact merge and exact-main-push CI activate the delegation, child ordinal 2 may modify exactly `AGENTS.md`, `docs/governance/GITHUB_AUTONOMOUS_DEVELOPMENT_CONTROL_PLANE_V2.md`, and this file. It must freeze the complete S1I physical contract and declaratively `REGISTER` the named single-use resource `P2_S1I_COMPAT_DDL_V1`. Ordinal 2 may not modify Prisma, migrations, application/test code, lifecycle files, dependencies, locks, workflows, or data. Its successful exact merge changes the resource only from `PROPOSED_INACTIVE` to `AVAILABLE`.
 
-Only child ordinal 3 may bind and consume that resource. Its changed-file set must equal these nine paths, with a newly generated 14-digit migration timestamp:
+Only child ordinal 3 may bind and consume that resource. After the single-use PR3 refreeze defined below, its changed-file set must equal these ten paths, with a newly generated 14-digit migration timestamp:
 
 1. `app/api/p2/projects/[projectId]/asset-tasks/[assetTaskId]/artifacts/[artifactId]/revisions/[artifactRevisionId]/content/route.ts`
 2. `app/api/p2/projects/[projectId]/asset-tasks/[assetTaskId]/execute-internal-test/route.ts`
@@ -212,7 +212,8 @@ Only child ordinal 3 may bind and consume that resource. Its changed-file set mu
 6. `src/tasks/asset-task.ts`
 7. `src/tasks/internal-asset-task-execution.ts`
 8. `tests/integration/p2-s1i-internal-attempt-artifact-lineage.test.ts`
-9. `tests/unit/p2-internal-attempt-artifact-api.test.ts`
+9. `tests/integration/p2-s1h-internal-single-image-asset-task.test.ts`
+10. `tests/unit/p2-internal-attempt-artifact-api.test.ts`
 
 The ordinal-3 binding must name the exact ordinal-2 registration merge SHA. It requires a fresh isolated loopback-only PostgreSQL 17 instance, deterministic Provider/object-storage substitutes, the complete migration/concurrency/rollback evidence frozen by ordinal 2, successful exact-Head CI, and two distinct exact-Head independent reviewers. It grants no production/shared database, real Provider, deployment, credential, fee, destructive, or lifecycle-file authority.
 
@@ -789,3 +790,13 @@ git diff --check
 Every real exit code is reported. The exact migration, rollback, concurrency, object-state, API, digest, tenant isolation, replay, negative JSONB, catalog, and cleanup evidence is reviewed independently by two distinct current-Head reviewers. Any unverified invariant or cleanup failure is `HOLD`; no claim is inferred from a passing metadata observer alone.
 
 <!-- P2_S1I_COMPLETE_CONTRACT_END -->
+
+## Single-use PR3 scope and baseline refreeze
+
+`AI_VISION_V5_S1I_PR3_SCOPE_REFREEZE_AND_LEGACY_ENUM_TEST_MIGRATION_V1` resolves the one pre-publication contradiction recorded by Issue #61. The complete registered S1I contract above remains byte-frozen and its semantic requirements do not change. For Issue #61 only, every reference above to the ordinal-3 "nine paths", and the sentence prohibiting a tenth path, is superseded solely by adding this exact tenth path:
+
+`tests/integration/p2-s1h-internal-single-image-asset-task.test.ts`
+
+That file may change only its exact `AssetTaskStatus` catalogue expectation from `QUEUED` to the ordered complete set `QUEUED`, `RUNNING`, `SUCCEEDED`, `FAILED`, `HARD_BLOCKED`. It must continue to require `QUEUED`, use exact equality, query the real PostgreSQL enum catalogue, and preserve every dependency, immutability, index, key, and trigger assertion. No test skipping, isolation, interception, contains-only weakening, or production accommodation is permitted.
+
+The refreeze advances Issue #61 once from `c46ba6af717628e528b71f2e335c6b5aa37ab407` to the exact one-parent squash merge of Issue #62's control-plane repair after its reviewed Head tree and exact-main-push CI succeed. The existing PR3 branch advances by ordinary merge only. One unedited owner `S1I_PR3_SCOPE_REFREEZE_JSON` comment binds old and new bases, repair Issue/PR/merge, old and new Issue-body digests, grant, nonce, child branch, and the frozen legacy-test path/hash. Missing, duplicate, edited, stale, replayed, permission-ambiguous, path-drifted, identity-drifted, tree-drifted, CI-ambiguous, lifecycle-ambiguous, or extra-main history is `HOLD`. Consumption is limited to Issue #61 and becomes permanently invalid after exact PR3 merge and main-push CI.
