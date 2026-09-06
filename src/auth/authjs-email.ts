@@ -50,7 +50,7 @@ export function createP2AuthEmailProvider(options: Readonly<{
   // Auth.js normally merges `options` into provider defaults during request
   // initialization. Returning the merged values here also keeps the isolated
   // configuration directly testable without importing the Next.js entrypoint.
-  return Object.freeze({ ...provider, ...provider.options, options: provider.options });
+  return { ...provider, ...provider.options, options: provider.options };
 }
 
 function parseVerificationUrl(value: string): string {
