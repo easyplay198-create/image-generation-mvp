@@ -6,7 +6,10 @@ import {
   POLICY,
   repositoryMergeCapabilities,
   S1I_REPAIR,
+  S1I_PR3_CRLF_BRIDGE,
   S1I_PR3_REFREEZE,
+  validateS1iPr3BridgeBodyRewrites,
+  validateS1iPr3CrlfBaselineBridge,
   validateS1iPr3LegacyEnumTestMigration,
   validateS1iPr3Refreeze,
   validateS1iMigration,
@@ -14,6 +17,7 @@ import {
   validateProgramHistory,
   assertStableSnapshots,
   canonicalProgramIssueContract,
+  commentParsingView,
   evaluateControlSnapshot,
   evaluateNamedSingleUseResource,
   evaluateProgramChildSnapshot,
@@ -23,6 +27,7 @@ import {
   isCanonicalHeadRef,
   isCanonicalRepositoryPath,
   latestCi,
+  normalizeComment,
   normalizeEvent,
   resolvePrNumber,
   sha256Text,
@@ -1020,6 +1025,80 @@ test('program Issue canonicalization is deterministic and rejects CRLF, duplicat
   assert.throws(
     () => canonicalProgramIssueContract(frozen.body.slice(0, -1)),
     /PROGRAM_ISSUE_BODY_FINAL_LF_INVALID/u,
+  );
+});
+
+const REAL_PR3_REFREEZE_COMMENT = [
+  'One-use PR3 refreeze consumed after PR #63 exact squash ancestry, tree equality, and exact main-push CI success. This record is immutable and scoped only to Issue #61 and its existing branch.',
+  '',
+  '<!-- S1I_PR3_SCOPE_REFREEZE_JSON_BEGIN',
+  '{"schema":"s1i-pr3-scope-refreeze-v1","migrationId":"AI_VISION_V5_S1I_PR3_SCOPE_REFREEZE_AND_LEGACY_ENUM_TEST_MIGRATION_V1","programId":"AI_VISION_V5_S1I_AUTONOMOUS_DELIVERY_V1","issueNumber":61,"oldBaseSha":"c46ba6af717628e528b71f2e335c6b5aa37ab407","newBaseSha":"2dd6c6d7d50680d3e25579f4d6a562eede756b25","repairIssueNumber":62,"repairPrNumber":63,"repairMergeSha":"2dd6c6d7d50680d3e25579f4d6a562eede756b25","childBranch":"codex/p2-s1i-internal-attempt-artifact-v1-c46ba6af","legacyEnumTestPath":"tests/integration/p2-s1h-internal-single-image-asset-task.test.ts","legacyEnumTestSha256":"8c266a8622e64cf17a8b467a33736e45857e8615fc43c3d0e5fa2fc9190d60e6","oldIssueBodySha256":"1b8907c0134a385ea6395717251dc09ea641a6a63f9a4f50b39b1d4636b091c9","newIssueBodySha256":"ae200bc00b5c0146550fa15f9a855667e2c57daacc21eb6a810ff97d6e20bb5f","grantId":"grant-11b14fc070278bd571fce78471e24d86","nonce":"4608fa9798085ec4c24b763f06d91ee1","consumptionState":"CONSUMED"}',
+  'S1I_PR3_SCOPE_REFREEZE_JSON_END -->',
+  '',
+].join('\r\n');
+
+const REAL_PR3_REFREEZE_REVIEW_COMMENT = [
+  'Independent AI review PASS after correction of the authoritative blob hash and exact Head-delta enforcement. No remaining findings.',
+  '',
+  '<!-- PROGRAM_INDEPENDENT_REVIEW_JSON_BEGIN',
+  '{"findings":[],"headSha":"cb2e131e1b8ecfeec4ef3b7a9787bbf74f8e2fca","prNumber":63,"programId":"AI_VISION_V5_S1I_AUTONOMOUS_DELIVERY_V1","reviewedAt":"2026-09-05T00:29:12Z","reviewerSessionId":"reviewer-s1i-pr3-refreeze-independent-v1","schema":"autonomous-delivery-review-v1","verdict":"PASS"}',
+  'PROGRAM_INDEPENDENT_REVIEW_JSON_END -->',
+  '',
+].join('\r\n');
+
+test('real PR3 CRLF comments reproduce the old parse failure and preserve raw evidence', () => {
+  const fixtures = [
+    {
+      id: 5548103159,
+      markerName: 'S1I_PR3_SCOPE_REFREEZE_JSON',
+      body: REAL_PR3_REFREEZE_COMMENT,
+      bodySha256: '8640cdc211148bbbb8216a09b171dbaf9b8c6b1a215f30b1ee28821aa70c99d0',
+      createdAt: '2026-09-05T00:35:59Z',
+    },
+    {
+      id: 5548062689,
+      markerName: 'PROGRAM_INDEPENDENT_REVIEW_JSON',
+      body: REAL_PR3_REFREEZE_REVIEW_COMMENT,
+      bodySha256: 'edb2c637f2c6e2e12db41084994084a02272ed09106ab960dde2529613d6c610',
+      createdAt: '2026-09-05T00:29:16Z',
+    },
+  ];
+  for (const fixture of fixtures) {
+    assert.throws(
+      () => extractMarkedJson(fixture.body, fixture.markerName),
+      new RegExp(`${fixture.markerName}_COUNT_0`, 'u'),
+    );
+    const normalized = normalizeComment({
+      id: fixture.id,
+      body: fixture.body,
+      user: owner(),
+      author_association: 'OWNER',
+      created_at: fixture.createdAt,
+      updated_at: fixture.createdAt,
+      html_url: `https://github.com/easyplay198-create/image-generation-mvp/issues/61#issuecomment-${fixture.id}`,
+    });
+    assert.equal(normalized.id, fixture.id);
+    assert.equal(normalized.body, fixture.body);
+    assert.equal(normalized.bodySha256, fixture.bodySha256);
+    assert.equal(normalized.createdAt, fixture.createdAt);
+    assert.equal(normalized.updatedAt, fixture.createdAt);
+    assert.doesNotThrow(() => extractMarkedJson(commentParsingView(normalized.body), fixture.markerName));
+  }
+});
+
+test('comment parsing accepts uniform LF or CRLF and rejects mixed, lone-CR and duplicate markers', () => {
+  const lf = marker('CONTROL_PLANE_V2_APPROVAL', { schema: POLICY.schema });
+  const crlf = lf.replaceAll('\n', '\r\n');
+  assert.equal(commentParsingView(lf), lf);
+  assert.equal(commentParsingView(crlf), lf);
+  assert.throws(
+    () => commentParsingView(crlf.replace('\r\n{', '\n{')),
+    /COMMENT_BODY_MIXED_LINE_ENDINGS/u,
+  );
+  assert.throws(() => commentParsingView(crlf.replace('\r\n{', '\r{')), /COMMENT_BODY_LONE_CR_INVALID/u);
+  assert.throws(
+    () => extractMarkedJson(commentParsingView(`${crlf}\r\n${crlf}`), 'CONTROL_PLANE_V2_APPROVAL'),
+    /CONTROL_PLANE_V2_APPROVAL_COUNT_2/u,
   );
 });
 
@@ -2713,9 +2792,8 @@ test('migration never permits a second target, old-base replay or unrelated main
   }
 });
 
-function pr3RefreezeFixture() {
+function pr3RefreezeFixture(newBase = '8'.repeat(40)) {
   const repairSnapshot = makeProgramSnapshot();
-  const newBase = '8'.repeat(40);
   Object.assign(repairSnapshot.pr, {
     number: 63,
     state: 'closed',
@@ -2817,6 +2895,264 @@ test('PR3 refreeze accepts one exact repair edge and fails closed on replay or d
   }
 });
 
+function exactLivePr3Paths() {
+  return programChild3Paths().map((path) => path.replace(
+    '20260905010101_p2_internal_attempt_artifact_lineage',
+    '20260905002000_p2_internal_attempt_artifact_lineage',
+  ));
+}
+
+function pr3CrlfBridgeFixture() {
+  const newBase = '7'.repeat(40);
+  const newChildHead = '6'.repeat(40);
+  const repairSnapshot = makeProgramSnapshot();
+  Object.assign(repairSnapshot.pr, {
+    number: 66,
+    state: 'closed',
+    draft: false,
+    merged: true,
+    mergedAt: '2026-09-06T00:05:00Z',
+    mergeCommitSha: newBase,
+  });
+  repairSnapshot.pr.base.sha = S1I_PR3_CRLF_BRIDGE.oldBaseSha;
+  repairSnapshot.pr.head.ref = S1I_PR3_CRLF_BRIDGE.repairBranch;
+  syncProgramCi(repairSnapshot);
+  repairSnapshot.ci.createdAt = '2026-09-06T00:01:00Z';
+  repairSnapshot.ci.jobs[0].completedAt = '2026-09-06T00:04:00Z';
+  const activationCi = programActivationCiEvidence(newBase);
+  activationCi.createdAt = '2026-09-06T00:06:00Z';
+  activationCi.jobs[0].completedAt = '2026-09-06T00:06:30Z';
+  const child = {
+    issueNumber: S1I_PR3_CRLF_BRIDGE.issueNumber,
+    binding: {
+      childOrdinal: 3,
+      programId: PROGRAM_ID,
+      authorizedHeadRef: S1I_PR3_CRLF_BRIDGE.childBranch,
+      authorizedBaseSha: newBase,
+      expectedBaseSha: newBase,
+      previousMergeSha: newBase,
+      delegationActivationSha: S1I_PR3_CRLF_BRIDGE.delegationActivationSha,
+      issueContractSha256: S1I_PR3_CRLF_BRIDGE.issueContractSha256,
+      expiresAt: S1I_PR3_CRLF_BRIDGE.expiresAt,
+      grantId: S1I_PR3_CRLF_BRIDGE.grantId,
+      nonce: S1I_PR3_CRLF_BRIDGE.nonce,
+      exactAllowedPaths: exactLivePr3Paths(),
+    },
+    pr: {
+      number: S1I_PR3_CRLF_BRIDGE.prNumber,
+      head: { ref: S1I_PR3_CRLF_BRIDGE.childBranch, sha: newChildHead },
+    },
+  };
+  const { child: previousChild, evidence: previousRefreeze } = pr3RefreezeFixture(
+    S1I_PR3_CRLF_BRIDGE.oldBaseSha,
+  );
+  Object.assign(previousChild.binding, {
+    grantId: S1I_PR3_CRLF_BRIDGE.grantId,
+    nonce: S1I_PR3_CRLF_BRIDGE.nonce,
+  });
+  Object.assign(previousRefreeze.record, {
+    newBaseSha: S1I_PR3_CRLF_BRIDGE.oldBaseSha,
+    repairMergeSha: S1I_PR3_CRLF_BRIDGE.oldBaseSha,
+    newIssueBodySha256: S1I_PR3_CRLF_BRIDGE.previousIssueBodySha256,
+    grantId: S1I_PR3_CRLF_BRIDGE.grantId,
+    nonce: S1I_PR3_CRLF_BRIDGE.nonce,
+  });
+  Object.assign(previousRefreeze.mergeCommit, {
+    sha: S1I_PR3_CRLF_BRIDGE.oldBaseSha,
+  });
+  previousRefreeze.repair.mergeCommitSha = S1I_PR3_CRLF_BRIDGE.oldBaseSha;
+  previousRefreeze.issueBodySha256 = S1I_PR3_CRLF_BRIDGE.previousIssueBodySha256;
+  previousRefreeze.comment = {
+    id: S1I_PR3_CRLF_BRIDGE.refreezeComment.id,
+    bodySha256: S1I_PR3_CRLF_BRIDGE.refreezeComment.bodySha256,
+    user: owner(),
+    authorAssociation: 'OWNER',
+    createdAt: S1I_PR3_CRLF_BRIDGE.refreezeComment.createdAt,
+    updatedAt: S1I_PR3_CRLF_BRIDGE.refreezeComment.createdAt,
+  };
+  previousRefreeze.reviews = [{
+    reviewedAt: '2026-09-05T00:29:12Z',
+    commentCreatedAt: S1I_PR3_CRLF_BRIDGE.refreezeReviewComment.createdAt,
+    commentId: S1I_PR3_CRLF_BRIDGE.refreezeReviewComment.id,
+    commentBodySha256: S1I_PR3_CRLF_BRIDGE.refreezeReviewComment.bodySha256,
+  }];
+  const record = {
+    schema: 's1i-pr3-crlf-baseline-bridge-v1',
+    bridgeId: S1I_PR3_CRLF_BRIDGE.bridgeId,
+    programId: PROGRAM_ID,
+    issueNumber: S1I_PR3_CRLF_BRIDGE.issueNumber,
+    prNumber: S1I_PR3_CRLF_BRIDGE.prNumber,
+    oldBaseSha: S1I_PR3_CRLF_BRIDGE.oldBaseSha,
+    newBaseSha: newBase,
+    repairIssueNumber: S1I_PR3_CRLF_BRIDGE.repairIssueNumber,
+    repairPrNumber: repairSnapshot.pr.number,
+    repairMergeSha: newBase,
+    repairIssueBodySha256: S1I_PR3_CRLF_BRIDGE.repairIssueBodySha256,
+    repairApprovalCommentId: S1I_PR3_CRLF_BRIDGE.repairApprovalCommentId,
+    childBranch: S1I_PR3_CRLF_BRIDGE.childBranch,
+    oldChildHeadSha: S1I_PR3_CRLF_BRIDGE.oldChildHeadSha,
+    newChildHeadSha: newChildHead,
+    previousIssueBodySha256: S1I_PR3_CRLF_BRIDGE.previousIssueBodySha256,
+    newIssueBodySha256: 'a'.repeat(64),
+    previousPrBodySha256: S1I_PR3_CRLF_BRIDGE.previousPrBodySha256,
+    newPrBodySha256: 'b'.repeat(64),
+    grantId: S1I_PR3_CRLF_BRIDGE.grantId,
+    nonce: S1I_PR3_CRLF_BRIDGE.nonce,
+    refreezeCommentId: S1I_PR3_CRLF_BRIDGE.refreezeComment.id,
+    refreezeCommentBodySha256: S1I_PR3_CRLF_BRIDGE.refreezeComment.bodySha256,
+    refreezeReviewCommentId: S1I_PR3_CRLF_BRIDGE.refreezeReviewComment.id,
+    refreezeReviewCommentBodySha256: S1I_PR3_CRLF_BRIDGE.refreezeReviewComment.bodySha256,
+    consumptionState: 'CONSUMED',
+  };
+  const evidence = {
+    record,
+    comment: { id: 9950, user: owner(), authorAssociation: 'OWNER',
+      createdAt: '2026-09-06T00:07:00Z', updatedAt: '2026-09-06T00:07:00Z' },
+    repair: repairSnapshot.pr,
+    mergeCommit: { sha: newBase, parents: [{ sha: S1I_PR3_CRLF_BRIDGE.oldBaseSha }],
+      tree: { sha: 'd'.repeat(40) } },
+    headCommit: { sha: repairSnapshot.pr.head.sha, tree: { sha: 'd'.repeat(40) } },
+    ci: repairSnapshot.ci,
+    activationCi,
+    approval: { id: S1I_PR3_CRLF_BRIDGE.repairApprovalCommentId,
+      createdAt: '2026-09-06T00:00:00Z' },
+    reviews: [{ reviewedAt: '2026-09-06T00:03:59Z',
+      commentCreatedAt: '2026-09-06T00:04:00Z' }],
+    previousRefreeze,
+    prTimeline: [{ event: 'ready_for_review', actor: owner(),
+      createdAt: '2026-09-06T00:04:30Z' }],
+    issueTimeline: [{ event: 'closed', actor: owner(),
+      createdAt: repairSnapshot.pr.mergedAt }],
+    repairIssueBodySha256: S1I_PR3_CRLF_BRIDGE.repairIssueBodySha256,
+    repairIdentityAndScopeValid: true,
+    mainSha: newBase,
+    issueBodySha256: record.newIssueBodySha256,
+    prBodySha256: record.newPrBodySha256,
+    issueAndPrBodyRewritesValid: true,
+    childHeadMergeValid: true,
+    businessContentUnchanged: true,
+  };
+  return { child, evidence };
+}
+
+test('PR3 CRLF bridge accepts only one exact post-activation edge', () => {
+  const { child, evidence } = pr3CrlfBridgeFixture();
+  assert.equal(validateS1iPr3CrlfBaselineBridge(evidence, child), evidence.record.newBaseSha);
+  const mutations = [
+    (e) => { e.record.oldBaseSha = '0'.repeat(40); },
+    (e) => { e.record.newBaseSha = '0'.repeat(40); },
+    (e) => { e.record.repairPrNumber += 1; },
+    (e) => { e.record.issueNumber += 1; },
+    (e) => { e.record.prNumber += 1; },
+    (e) => { e.record.repairIssueBodySha256 = '0'.repeat(64); },
+    (e) => { e.record.repairApprovalCommentId += 1; },
+    (e) => { e.record.consumptionState = 'AVAILABLE'; },
+    (e) => { e.comment.updatedAt = '2026-09-06T00:08:00Z'; },
+    (e) => { e.comment.user.id += 1; },
+    (e) => { e.repair.head.ref = 'other'; },
+    (e) => { e.mergeCommit.parents.push({ sha: '0'.repeat(40) }); },
+    (e) => { e.mergeCommit.tree.sha = '0'.repeat(40); },
+    (e) => { e.repairIdentityAndScopeValid = false; },
+    (e) => { e.childHeadMergeValid = false; },
+    (e) => { e.businessContentUnchanged = false; },
+    (e) => { e.issueAndPrBodyRewritesValid = false; },
+    (e) => { e.mainSha = '0'.repeat(40); },
+    (e) => { e.previousRefreeze.comment.bodySha256 = '0'.repeat(64); },
+    (e) => { e.previousRefreeze.reviews[0].commentBodySha256 = '0'.repeat(64); },
+    (e) => { e.reviews[0].commentCreatedAt = e.repair.mergedAt; },
+    (e) => { e.activationCi.jobs[0].completedAt = e.comment.createdAt; },
+  ];
+  for (const mutate of mutations) {
+    const fixture = pr3CrlfBridgeFixture();
+    mutate(fixture.evidence);
+    assert.throws(
+      () => validateS1iPr3CrlfBaselineBridge(fixture.evidence, fixture.child),
+      /S1I_PR3_CRLF_BRIDGE|PROGRAM_/u,
+    );
+  }
+  for (const mutate of [
+    (c) => { c.binding.expiresAt = '2026-10-05T13:51:27Z'; },
+    (c) => { c.binding.grantId += '-replay'; },
+    (c) => { c.binding.exactAllowedPaths.push('src/other.ts'); },
+    (c) => { c.pr.head.sha = '0'.repeat(40); },
+  ]) {
+    const fixture = pr3CrlfBridgeFixture();
+    mutate(fixture.child);
+    assert.throws(
+      () => validateS1iPr3CrlfBaselineBridge(fixture.evidence, fixture.child),
+      /S1I_PR3_CRLF_BRIDGE/u,
+    );
+  }
+});
+
+test('program history requires the bridge for the second PR3 baseline edge', () => {
+  const snapshot = makeProgramOrdinal3Snapshot();
+  const fixture = pr3CrlfBridgeFixture();
+  const current = snapshot.program.bindings.at(-1);
+  current.issueNumber = fixture.child.issueNumber;
+  current.binding = fixture.child.binding;
+  current.pr = {
+    ...current.pr,
+    number: fixture.child.pr.number,
+    head: {
+      ...current.pr.head,
+      ref: fixture.child.pr.head.ref,
+      sha: fixture.child.pr.head.sha,
+    },
+  };
+  fixture.child = current;
+  snapshot.program.binding = current.binding;
+  snapshot.program.pr3CrlfBridge = fixture.evidence;
+  assert.doesNotThrow(() => validateProgramHistory(snapshot.program, current.binding));
+  delete snapshot.program.pr3CrlfBridge;
+  assert.throws(
+    () => validateProgramHistory(snapshot.program, current.binding),
+    /S1I_PR3_REFREEZE_MISSING/u,
+  );
+});
+
+test('PR3 bridge permits only the three Issue-base and two PR-link field rewrites', () => {
+  const oldBaseSha = S1I_PR3_CRLF_BRIDGE.oldBaseSha;
+  const newBaseSha = '7'.repeat(40);
+  const canonicalText = '# Immutable PR3 contract\n';
+  const previous = bodyWithProgramBinding({
+    authorizedBaseSha: oldBaseSha,
+    expectedBaseSha: oldBaseSha,
+    previousMergeSha: oldBaseSha,
+  }, canonicalText);
+  const issueBody = previous.body
+    .replace(`"authorizedBaseSha":"${oldBaseSha}"`, `"authorizedBaseSha":"${newBaseSha}"`)
+    .replace(`"expectedBaseSha":"${oldBaseSha}"`, `"expectedBaseSha":"${newBaseSha}"`)
+    .replace(`"previousMergeSha":"${oldBaseSha}"`, `"previousMergeSha":"${newBaseSha}"`);
+  const previousPrBody = marker('PROGRAM_CHILD_LINK_JSON', {
+    authorizedBaseSha: oldBaseSha,
+    issueBodyReadbackSha256: sha256Text(previous.body),
+  });
+  const prBody = previousPrBody
+    .replace(`"authorizedBaseSha":"${oldBaseSha}"`, `"authorizedBaseSha":"${newBaseSha}"`)
+    .replace(
+      `"issueBodyReadbackSha256":"${sha256Text(previous.body)}"`,
+      `"issueBodyReadbackSha256":"${sha256Text(issueBody)}"`,
+    );
+  const record = {
+    oldBaseSha,
+    newBaseSha,
+    previousIssueBodySha256: sha256Text(previous.body),
+    newIssueBodySha256: sha256Text(issueBody),
+    previousPrBodySha256: sha256Text(previousPrBody),
+    newPrBodySha256: sha256Text(prBody),
+  };
+  assert.equal(validateS1iPr3BridgeBodyRewrites(issueBody, prBody, record), true);
+  const changedContract = issueBody.replace('# Immutable PR3 contract', '# Changed PR3 contract');
+  assert.throws(
+    () => validateS1iPr3BridgeBodyRewrites(changedContract, prBody, {
+      ...record,
+      newIssueBodySha256: sha256Text(changedContract),
+    }),
+    /S1I_PR3_CRLF_BRIDGE_/u,
+  );
+});
+
 test('PR3 legacy enum migration permits only the exact ordered expectation replacement', () => {
   const oldText = [
     'before',
@@ -2871,8 +3207,17 @@ test('P2 templates and governance freeze Draft-only task-scoped entry', async ()
   assert.match(controlGovernance, /REQUESTED_AUTOMATED_REPAIR_LIMIT=0/u);
   assert.match(agents, /at most five worktree-local corrections/u);
   assert.match(agents, /REQUESTED_AUTOMATED_REPAIR_LIMIT/u);
+  assert.match(agents, /PR3 CRLF compatibility and one-use baseline bridge/u);
+  assert.match(agents, /Issue #65/u);
   assert.match(p2Governance, /DO_NOT_MERGE_BY_AUTOMATION/u);
+  assert.match(p2Governance, /One-use PR3 CRLF compatibility baseline bridge/u);
+  assert.match(p2Governance, /S1I_PR3_CRLF_BASELINE_BRIDGE_JSON/u);
+  assert.match(controlGovernance, /PR3 CRLF compatibility and one-use baseline bridge/u);
+  assert.match(controlGovernance, /5548103159/u);
+  assert.match(controlGovernance, /5548062689/u);
   assert.match(evaluator, /pulls\?state=all&head=/u);
+  assert.match(evaluator, /COMMENT_BODY_MIXED_LINE_ENDINGS/u);
+  assert.match(evaluator, /S1I_PR3_CRLF_BRIDGE_RECORD_COUNT_INVALID/u);
 });
 
 test('observer workflow is read-only, pinned, queued, and never executes PR head', async () => {

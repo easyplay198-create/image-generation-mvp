@@ -559,7 +559,7 @@ function validateProgramReview(comments, binding, pr) {
     ) {
       throw new Error('PROGRAM_REVIEW_EDITED_OR_TIME_MISSING');
     }
-    const review = extractMarkedJson(comment.body, PROGRAM_REVIEW_MARKER);
+    const review = extractMarkedJson(commentParsingView(comment.body), PROGRAM_REVIEW_MARKER);
     exactKeys(review, [
       'findings', 'headSha', 'prNumber', 'programId', 'reviewedAt', 'reviewerSessionId',
       'schema', 'verdict',
@@ -579,7 +579,12 @@ function validateProgramReview(comments, binding, pr) {
     ) {
       continue;
     }
-    current.push({ ...review, commentCreatedAt: comment.createdAt, commentId: comment.id });
+    current.push({
+      ...review,
+      commentBodySha256: verifiedCommentBodySha256(comment),
+      commentCreatedAt: comment.createdAt,
+      commentId: comment.id,
+    });
   }
   const expectedCount = binding.childOrdinal === 3 ? 2 : 1;
   if (
@@ -648,6 +653,24 @@ function mentionsMarker(body, marker) {
     typeof body === 'string' &&
     (body.includes(`${marker}_BEGIN`) || body.includes(`${marker}_END`))
   );
+}
+
+export function commentParsingView(rawBody) {
+  if (typeof rawBody !== 'string') throw new Error('COMMENT_BODY_TEXT_MISSING');
+  const withoutCrLf = rawBody.replaceAll('\r\n', '');
+  if (withoutCrLf.includes('\r')) throw new Error('COMMENT_BODY_LONE_CR_INVALID');
+  if (rawBody.includes('\r\n') && withoutCrLf.includes('\n')) {
+    throw new Error('COMMENT_BODY_MIXED_LINE_ENDINGS');
+  }
+  return rawBody.replaceAll('\r\n', '\n');
+}
+
+function verifiedCommentBodySha256(comment) {
+  const digest = sha256Text(comment?.body ?? '');
+  if (comment?.bodySha256 !== undefined && comment.bodySha256 !== digest) {
+    throw new Error('COMMENT_BODY_SHA256_MISMATCH');
+  }
+  return digest;
 }
 
 function validateContract(contract) {
@@ -719,7 +742,7 @@ function parseTrustedApproval(comment) {
   ) {
     throw new Error('APPROVAL_EDITED_OR_TIME_MISSING');
   }
-  const approval = extractMarkedJson(comment.body, APPROVAL_MARKER);
+  const approval = extractMarkedJson(commentParsingView(comment.body), APPROVAL_MARKER);
   const p2Approval = Object.hasOwn(approval, 'authorizedHeadRef');
   exactKeys(
     approval,
@@ -980,7 +1003,7 @@ function validateLedger(comments, context) {
     if (!comment.createdAt || comment.updatedAt !== comment.createdAt) {
       throw new Error('LEDGER_EDITED_OR_TIME_MISSING');
     }
-    const entry = extractMarkedJson(comment.body, LEDGER_MARKER);
+    const entry = extractMarkedJson(commentParsingView(comment.body), LEDGER_MARKER);
     exactKeys(
       entry,
       [
@@ -1279,6 +1302,36 @@ export const S1I_PR3_REFREEZE = Object.freeze({
   migrationId: 'AI_VISION_V5_S1I_PR3_SCOPE_REFREEZE_AND_LEGACY_ENUM_TEST_MIGRATION_V1',
 });
 const S1I_PR3_REFREEZE_MARKER = 'S1I_PR3_SCOPE_REFREEZE_JSON';
+export const S1I_PR3_CRLF_BRIDGE = Object.freeze({
+  bridgeId: 'PR3_CRLF_COMPATIBILITY_AND_BASELINE_BRIDGE_V1',
+  oldBaseSha: '2dd6c6d7d50680d3e25579f4d6a562eede756b25',
+  previousIssueBodySha256: 'ae200bc00b5c0146550fa15f9a855667e2c57daacc21eb6a810ff97d6e20bb5f',
+  previousPrBodySha256: '78a3464d703a89c453eac0d45c26d4150cc737a1921d249431e681ca4b9d5cbf',
+  oldChildHeadSha: '61d171e4685a1148bec63afb9be0f881db83fd74',
+  repairIssueNumber: 65,
+  repairIssueBodySha256: 'f7c3e979731324115369b4685fa196d5280f7b8c568017dd70c71367230d1d01',
+  repairApprovalCommentId: 5556927495,
+  repairBranch: 'codex/pr3-crlf-governance-repair-v1-2dd6c6d',
+  issueNumber: 61,
+  prNumber: 64,
+  childBranch: 'codex/p2-s1i-internal-attempt-artifact-v1-c46ba6af',
+  delegationActivationSha: '29ba2f1badac6023c42f1ca8e1d7aad67eedc5b1',
+  issueContractSha256: 'df796f6ce926884eb7a38b3ee7abd4809b9cf97773de73f42dd5bb2bacaff0ed',
+  grantId: 'grant-11b14fc070278bd571fce78471e24d86',
+  nonce: '4608fa9798085ec4c24b763f06d91ee1',
+  expiresAt: '2026-10-04T13:51:27Z',
+  refreezeComment: Object.freeze({
+    id: 5548103159,
+    bodySha256: '8640cdc211148bbbb8216a09b171dbaf9b8c6b1a215f30b1ee28821aa70c99d0',
+    createdAt: '2026-09-05T00:35:59Z',
+  }),
+  refreezeReviewComment: Object.freeze({
+    id: 5548062689,
+    bodySha256: 'edb2c637f2c6e2e12db41084994084a02272ed09106ab960dde2529613d6c610',
+    createdAt: '2026-09-05T00:29:16Z',
+  }),
+});
+const S1I_PR3_CRLF_BRIDGE_MARKER = 'S1I_PR3_CRLF_BASELINE_BRIDGE_JSON';
 const S1I_PR3_LEGACY_ENUM_EXPECTATION =
   '      { name: "AssetTaskStatus", labels: ["QUEUED"] },';
 const S1I_PR3_REFROZEN_ENUM_EXPECTATION =
@@ -1289,6 +1342,18 @@ const S1I_PR3_REFREEZE_PATHS = Object.freeze([
   'AGENTS.md',
   'docs/governance/GITHUB_AUTONOMOUS_DEVELOPMENT_CONTROL_PLANE_V2.md',
   'docs/governance/V5_P2_ENTRY_GOVERNANCE.md',
+]);
+const S1I_PR3_CRLF_BRIDGE_PATHS = Object.freeze([
+  '.github/scripts/autonomous-control-gate-v2.mjs',
+  '.github/scripts/autonomous-control-gate-v2.test.mjs',
+  'AGENTS.md',
+  'docs/governance/GITHUB_AUTONOMOUS_DEVELOPMENT_CONTROL_PLANE_V2.md',
+  'docs/governance/V5_P2_ENTRY_GOVERNANCE.md',
+]);
+const S1I_PR3_EXACT_PATHS = Object.freeze([
+  ...PROGRAM_CHILD_3_FIXED_PATHS.slice(0, 2),
+  'prisma/migrations/20260905002000_p2_internal_attempt_artifact_lineage/migration.sql',
+  ...PROGRAM_CHILD_3_FIXED_PATHS.slice(2),
 ]);
 
 export function validateS1iPr3LegacyEnumTestMigration(oldBytes, headBytes) {
@@ -1369,6 +1434,179 @@ export function validateS1iPr3Refreeze(evidence, child) {
   validateHistoricalProgramLifecycle(repair, evidence.prTimeline, evidence.issueTimeline);
   if (validateCi(ci, repair, evidence.approvalCreatedAt) !== 'success') {
     throw new Error('S1I_PR3_REFREEZE_CI_NOT_SUCCESS');
+  }
+  return record.newBaseSha;
+}
+
+function rewriteExactJsonField(body, key, currentValue, previousValue, label) {
+  const token = `"${key}":${JSON.stringify(currentValue)}`;
+  if (body.split(token).length !== 2) throw new Error(`${label}_${key}_COUNT_INVALID`);
+  return body.replace(token, `"${key}":${JSON.stringify(previousValue)}`);
+}
+
+export function validateS1iPr3BridgeBodyRewrites(issueBody, prBody, record) {
+  if (sha256Text(issueBody) !== record.newIssueBodySha256 ||
+      sha256Text(prBody) !== record.newPrBodySha256) {
+    throw new Error('S1I_PR3_CRLF_BRIDGE_CURRENT_BODY_SHA_INVALID');
+  }
+  const binding = extractMarkedJson(issueBody, PROGRAM_BINDING_MARKER);
+  const link = extractMarkedJson(prBody, PROGRAM_LINK_MARKER);
+  for (const key of ['authorizedBaseSha', 'expectedBaseSha', 'previousMergeSha']) {
+    if (binding[key] !== record.newBaseSha) {
+      throw new Error(`S1I_PR3_CRLF_BRIDGE_ISSUE_${key}_INVALID`);
+    }
+  }
+  if (link.authorizedBaseSha !== record.newBaseSha ||
+      link.issueBodyReadbackSha256 !== record.newIssueBodySha256) {
+    throw new Error('S1I_PR3_CRLF_BRIDGE_PR_LINK_INVALID');
+  }
+  let previousIssueBody = issueBody;
+  for (const key of ['authorizedBaseSha', 'expectedBaseSha', 'previousMergeSha']) {
+    previousIssueBody = rewriteExactJsonField(
+      previousIssueBody,
+      key,
+      record.newBaseSha,
+      record.oldBaseSha,
+      'S1I_PR3_CRLF_BRIDGE_ISSUE',
+    );
+  }
+  let previousPrBody = rewriteExactJsonField(
+    prBody,
+    'authorizedBaseSha',
+    record.newBaseSha,
+    record.oldBaseSha,
+    'S1I_PR3_CRLF_BRIDGE_PR',
+  );
+  previousPrBody = rewriteExactJsonField(
+    previousPrBody,
+    'issueBodyReadbackSha256',
+    record.newIssueBodySha256,
+    record.previousIssueBodySha256,
+    'S1I_PR3_CRLF_BRIDGE_PR',
+  );
+  if (sha256Text(previousIssueBody) !== record.previousIssueBodySha256 ||
+      sha256Text(previousPrBody) !== record.previousPrBodySha256) {
+    throw new Error('S1I_PR3_CRLF_BRIDGE_BODY_REWRITE_INVALID');
+  }
+  if (sha256Text(canonicalProgramIssueContract(issueBody)) !== binding.issueContractSha256) {
+    throw new Error('S1I_PR3_CRLF_BRIDGE_ISSUE_CONTRACT_CHANGED');
+  }
+  return true;
+}
+
+export function validateS1iPr3CrlfBaselineBridge(evidence, child) {
+  const { record, comment, repair, mergeCommit, headCommit, ci, activationCi } = evidence ?? {};
+  if (!record) throw new Error('S1I_PR3_CRLF_BRIDGE_MISSING');
+  exactKeys(record, [
+    'schema', 'bridgeId', 'programId', 'issueNumber', 'prNumber', 'oldBaseSha',
+    'newBaseSha', 'repairIssueNumber', 'repairPrNumber', 'repairMergeSha',
+    'repairIssueBodySha256', 'repairApprovalCommentId', 'childBranch', 'oldChildHeadSha',
+    'newChildHeadSha', 'previousIssueBodySha256', 'newIssueBodySha256',
+    'previousPrBodySha256', 'newPrBodySha256', 'grantId', 'nonce',
+    'refreezeCommentId', 'refreezeCommentBodySha256', 'refreezeReviewCommentId',
+    'refreezeReviewCommentBodySha256', 'consumptionState',
+  ], 'S1I_PR3_CRLF_BRIDGE');
+  if (
+    record.schema !== 's1i-pr3-crlf-baseline-bridge-v1' ||
+    record.bridgeId !== S1I_PR3_CRLF_BRIDGE.bridgeId ||
+    record.programId !== PROGRAM_ID ||
+    record.issueNumber !== S1I_PR3_CRLF_BRIDGE.issueNumber ||
+    record.prNumber !== S1I_PR3_CRLF_BRIDGE.prNumber ||
+    record.oldBaseSha !== S1I_PR3_CRLF_BRIDGE.oldBaseSha ||
+    !isCommitSha(record.newBaseSha) || record.newBaseSha === record.oldBaseSha ||
+    record.newBaseSha !== record.repairMergeSha ||
+    record.repairIssueNumber !== S1I_PR3_CRLF_BRIDGE.repairIssueNumber ||
+    record.repairIssueBodySha256 !== S1I_PR3_CRLF_BRIDGE.repairIssueBodySha256 ||
+    record.repairApprovalCommentId !== S1I_PR3_CRLF_BRIDGE.repairApprovalCommentId ||
+    record.childBranch !== S1I_PR3_CRLF_BRIDGE.childBranch ||
+    record.oldChildHeadSha !== S1I_PR3_CRLF_BRIDGE.oldChildHeadSha ||
+    record.previousIssueBodySha256 !== S1I_PR3_CRLF_BRIDGE.previousIssueBodySha256 ||
+    record.previousPrBodySha256 !== S1I_PR3_CRLF_BRIDGE.previousPrBodySha256 ||
+    record.grantId !== S1I_PR3_CRLF_BRIDGE.grantId ||
+    record.nonce !== S1I_PR3_CRLF_BRIDGE.nonce ||
+    record.refreezeCommentId !== S1I_PR3_CRLF_BRIDGE.refreezeComment.id ||
+    record.refreezeCommentBodySha256 !== S1I_PR3_CRLF_BRIDGE.refreezeComment.bodySha256 ||
+    record.refreezeReviewCommentId !== S1I_PR3_CRLF_BRIDGE.refreezeReviewComment.id ||
+    record.refreezeReviewCommentBodySha256 !== S1I_PR3_CRLF_BRIDGE.refreezeReviewComment.bodySha256 ||
+    record.consumptionState !== 'CONSUMED' ||
+    !isSha256(record.newIssueBodySha256) || !isSha256(record.newPrBodySha256) ||
+    child?.issueNumber !== record.issueNumber || child.pr?.number !== record.prNumber ||
+    child.binding?.childOrdinal !== 3 || child.binding.programId !== PROGRAM_ID ||
+    child.binding.authorizedHeadRef !== record.childBranch ||
+    child.binding.delegationActivationSha !== S1I_PR3_CRLF_BRIDGE.delegationActivationSha ||
+    child.binding.issueContractSha256 !== S1I_PR3_CRLF_BRIDGE.issueContractSha256 ||
+    child.binding.expiresAt !== S1I_PR3_CRLF_BRIDGE.expiresAt ||
+    child.binding.grantId !== record.grantId || child.binding.nonce !== record.nonce ||
+    child.binding.authorizedBaseSha !== record.newBaseSha ||
+    child.binding.expectedBaseSha !== record.newBaseSha ||
+    child.binding.previousMergeSha !== record.newBaseSha ||
+    child.pr.head?.ref !== record.childBranch || child.pr.head.sha !== record.newChildHeadSha ||
+    evidence.mainSha !== record.newBaseSha ||
+    evidence.issueBodySha256 !== record.newIssueBodySha256 ||
+    evidence.prBodySha256 !== record.newPrBodySha256 ||
+    evidence.issueAndPrBodyRewritesValid !== true ||
+    evidence.childHeadMergeValid !== true || evidence.businessContentUnchanged !== true ||
+    !isOwner(comment?.user, comment?.authorAssociation) ||
+    !Number.isInteger(comment?.id) || comment.id < 1 ||
+    !isIsoInstant(comment.createdAt) || comment.createdAt !== comment.updatedAt ||
+    !repair || repair.number !== record.repairPrNumber || repair.merged !== true ||
+    repair.state !== 'closed' || !isOwnerIdentity(repair.user) ||
+    repair.base?.sha !== record.oldBaseSha || repair.base.ref !== POLICY.defaultBranch ||
+    repair.base.repoId !== POLICY.repositoryId || repair.head?.repoId !== POLICY.repositoryId ||
+    repair.head.ref !== S1I_PR3_CRLF_BRIDGE.repairBranch ||
+    repair.mergeCommitSha !== record.newBaseSha ||
+    mergeCommit?.sha !== record.newBaseSha || mergeCommit.parents?.length !== 1 ||
+    mergeCommit.parents[0]?.sha !== record.oldBaseSha ||
+    headCommit?.sha !== repair.head.sha || !isCommitSha(headCommit?.tree?.sha) ||
+    mergeCommit.tree?.sha !== headCommit.tree.sha ||
+    evidence.repairIdentityAndScopeValid !== true ||
+    evidence.repairIssueBodySha256 !== record.repairIssueBodySha256 ||
+    evidence.approval?.id !== record.repairApprovalCommentId
+  ) throw new Error('S1I_PR3_CRLF_BRIDGE_BINDING_OR_HISTORY_INVALID');
+  exactStringSet(child.binding.exactAllowedPaths, S1I_PR3_EXACT_PATHS,
+    'S1I_PR3_CRLF_BRIDGE_CHILD_PATHS');
+  const previousChild = {
+    ...child,
+    binding: {
+      ...child.binding,
+      authorizedBaseSha: record.oldBaseSha,
+      expectedBaseSha: record.oldBaseSha,
+      previousMergeSha: record.oldBaseSha,
+    },
+  };
+  if (validateS1iPr3Refreeze(evidence.previousRefreeze, previousChild) !== record.oldBaseSha) {
+    throw new Error('S1I_PR3_CRLF_BRIDGE_PRIOR_REFREEZE_INVALID');
+  }
+  const priorComment = evidence.previousRefreeze.comment;
+  const priorReviews = evidence.previousRefreeze.reviews;
+  if (
+    priorComment?.id !== S1I_PR3_CRLF_BRIDGE.refreezeComment.id ||
+    priorComment.bodySha256 !== S1I_PR3_CRLF_BRIDGE.refreezeComment.bodySha256 ||
+    priorComment.createdAt !== S1I_PR3_CRLF_BRIDGE.refreezeComment.createdAt ||
+    priorComment.updatedAt !== priorComment.createdAt ||
+    !Array.isArray(priorReviews) || priorReviews.length !== 1 ||
+    priorReviews[0].commentId !== S1I_PR3_CRLF_BRIDGE.refreezeReviewComment.id ||
+    priorReviews[0].commentBodySha256 !== S1I_PR3_CRLF_BRIDGE.refreezeReviewComment.bodySha256 ||
+    priorReviews[0].commentCreatedAt !== S1I_PR3_CRLF_BRIDGE.refreezeReviewComment.createdAt
+  ) throw new Error('S1I_PR3_CRLF_BRIDGE_PRIOR_COMMENT_EVIDENCE_INVALID');
+  validateProgramActivationCiEvidence(activationCi, record.newBaseSha);
+  validateHistoricalProgramLifecycle(repair, evidence.prTimeline, evidence.issueTimeline);
+  validateHistoricalProgramReviews(evidence.reviews, repair);
+  if (validateCi(ci, repair, evidence.approval.createdAt) !== 'success') {
+    throw new Error('S1I_PR3_CRLF_BRIDGE_CI_NOT_SUCCESS');
+  }
+  const prCompletedAt = ci?.jobs?.[0]?.completedAt;
+  const activationCompletedAt = activationCi?.jobs?.[0]?.completedAt;
+  if (!isIsoInstant(evidence.approval.createdAt) || !isIsoInstant(repair.mergedAt) ||
+      !isIsoInstant(prCompletedAt) || !isIsoInstant(activationCompletedAt) ||
+      Date.parse(evidence.approval.createdAt) <= Date.parse(priorComment.createdAt) ||
+      Date.parse(evidence.approval.createdAt) >= Date.parse(ci.createdAt) ||
+      Date.parse(ci.createdAt) >= Date.parse(prCompletedAt) ||
+      Date.parse(prCompletedAt) >= Date.parse(repair.mergedAt) ||
+      Date.parse(activationCi.createdAt) < Date.parse(repair.mergedAt) ||
+      Date.parse(activationCompletedAt) <= Date.parse(activationCi.createdAt) ||
+      Date.parse(activationCompletedAt) >= Date.parse(comment.createdAt)) {
+    throw new Error('S1I_PR3_CRLF_BRIDGE_CI_TIMING_INVALID');
   }
   return record.newBaseSha;
 }
@@ -1489,12 +1727,14 @@ export function validateProgramHistory(program, currentBinding) {
     if (child2Previous !== S1I_REPAIR.oldBaseSha) throw new Error('S1I_MIGRATION_ROOT_INVALID');
     child2Previous = validateS1iMigration(program.migration, child2);
   }
+  const child3 = relevant.find((entry) => entry.binding.childOrdinal === 3);
   const expectedPreviousMerge = currentBinding.childOrdinal === 2
     ? child2Previous
-    : program.pr3Refreeze || currentBinding.authorizedBaseSha !== priorChildren.at(-1)?.pr?.mergeCommitSha
-      ? validateS1iPr3Refreeze(program.pr3Refreeze, relevant.find((entry) =>
-        entry.binding.childOrdinal === 3))
-      : priorChildren.at(-1)?.pr?.mergeCommitSha;
+    : program.pr3CrlfBridge
+      ? validateS1iPr3CrlfBaselineBridge(program.pr3CrlfBridge, child3)
+      : program.pr3Refreeze || currentBinding.authorizedBaseSha !== priorChildren.at(-1)?.pr?.mergeCommitSha
+        ? validateS1iPr3Refreeze(program.pr3Refreeze, child3)
+        : priorChildren.at(-1)?.pr?.mergeCommitSha;
   if (
     !isCommitSha(expectedPreviousMerge) ||
     currentBinding.previousMergeSha !== expectedPreviousMerge ||
@@ -2117,10 +2357,12 @@ function normalizeChangedFiles(files, baseMap, headMap, expectedCount) {
   return normalized.sort((a, b) => a.filename.localeCompare(b.filename));
 }
 
-function normalizeComment(comment) {
+export function normalizeComment(comment) {
+  const body = comment.body ?? '';
   return {
     id: comment.id,
-    body: comment.body ?? '',
+    body,
+    bodySha256: sha256Text(body),
     user: normalizeUser(comment.user),
     authorAssociation: comment.author_association,
     createdAt: comment.created_at,
@@ -2467,7 +2709,7 @@ export async function loadS1iMigration(api, repositoryPath, child, issue) {
   if (comments.length === 0 && child.binding.authorizedBaseSha === S1I_REPAIR.oldBaseSha) return null;
   if (comments.length !== 1) throw new Error('S1I_MIGRATION_RECORD_COUNT_INVALID');
   const comment = comments[0];
-  const record = extractMarkedJson(comment.body, S1I_MIGRATION_MARKER);
+  const record = extractMarkedJson(commentParsingView(comment.body), S1I_MIGRATION_MARKER);
   const pulls = await api.list(`${repositoryPath}/pulls?state=all&head=${encodeURIComponent(
     `${POLICY.owner.login}:${S1I_REPAIR.repairBranch}`)}`);
   if (pulls.length !== 1 || pulls[0].number !== record.repairPrNumber) {
@@ -2538,14 +2780,20 @@ export async function loadS1iMigration(api, repositoryPath, child, issue) {
   return evidence;
 }
 
-export async function loadS1iPr3Refreeze(api, repositoryPath, child, issue) {
+export async function loadS1iPr3Refreeze(
+  api,
+  repositoryPath,
+  child,
+  issue,
+  historicalIssueBodySha256 = null,
+) {
   const comments = (await api.list(`${repositoryPath}/issues/${S1I_PR3_REFREEZE.issueNumber}/comments`))
     .map(normalizeComment).filter((comment) =>
       isOwnerIdentity(comment.user) && mentionsMarker(comment.body, S1I_PR3_REFREEZE_MARKER));
   if (comments.length === 0 && child.binding.authorizedBaseSha === S1I_PR3_REFREEZE.oldBaseSha) return null;
   if (comments.length !== 1) throw new Error('S1I_PR3_REFREEZE_RECORD_COUNT_INVALID');
   const comment = comments[0];
-  const record = extractMarkedJson(comment.body, S1I_PR3_REFREEZE_MARKER);
+  const record = extractMarkedJson(commentParsingView(comment.body), S1I_PR3_REFREEZE_MARKER);
   const pulls = await api.list(`${repositoryPath}/pulls?state=all&head=${encodeURIComponent(
     `${POLICY.owner.login}:${S1I_PR3_REFREEZE.repairBranch}`)}`);
   if (pulls.length !== 1 || pulls[0].number !== record.repairPrNumber) {
@@ -2610,7 +2858,7 @@ export async function loadS1iPr3Refreeze(api, repositoryPath, child, issue) {
     approval,
     reviews,
     repairIssueBodySha256: digest,
-    issueBodySha256: sha256Text(issue.body),
+    issueBodySha256: historicalIssueBodySha256 ?? sha256Text(issue.body),
     repairIdentityAndScopeValid: scopeValid,
     legacyTestFrozen: legacyBytes !== null &&
       createHash('sha256').update(legacyBytes).digest('hex') ===
@@ -2619,6 +2867,163 @@ export async function loadS1iPr3Refreeze(api, repositoryPath, child, issue) {
       validateS1iPr3LegacyEnumTestMigration(legacyBytes, migratedLegacyBytes),
   };
   validateS1iPr3Refreeze(evidence, child);
+  return evidence;
+}
+
+export async function loadS1iPr3CrlfBaselineBridge(
+  api,
+  repositoryPath,
+  child,
+  issue,
+  mainSha,
+) {
+  const issueComments = (await api.list(
+    `${repositoryPath}/issues/${S1I_PR3_CRLF_BRIDGE.issueNumber}/comments`,
+  )).map(normalizeComment);
+  const bridgeComments = issueComments.filter((comment) =>
+    isOwnerIdentity(comment.user) && mentionsMarker(comment.body, S1I_PR3_CRLF_BRIDGE_MARKER));
+  if (bridgeComments.length !== 1) {
+    throw new Error('S1I_PR3_CRLF_BRIDGE_RECORD_COUNT_INVALID');
+  }
+  const comment = bridgeComments[0];
+  const record = extractMarkedJson(
+    commentParsingView(comment.body),
+    S1I_PR3_CRLF_BRIDGE_MARKER,
+  );
+  const pulls = await api.list(`${repositoryPath}/pulls?state=all&head=${encodeURIComponent(
+    `${POLICY.owner.login}:${S1I_PR3_CRLF_BRIDGE.repairBranch}`)}`);
+  if (pulls.length !== 1 || pulls[0].number !== record.repairPrNumber) {
+    throw new Error('S1I_PR3_CRLF_BRIDGE_REPAIR_PR_NOT_UNIQUE');
+  }
+  const [{ data: rawRepair }, { data: repairIssue }, repairComments, repairIssueComments,
+    prTimelineRaw, issueTimelineRaw] = await Promise.all([
+    api.request(`${repositoryPath}/pulls/${record.repairPrNumber}`),
+    api.request(`${repositoryPath}/issues/${S1I_PR3_CRLF_BRIDGE.repairIssueNumber}`),
+    api.list(`${repositoryPath}/issues/${record.repairPrNumber}/comments`),
+    api.list(`${repositoryPath}/issues/${S1I_PR3_CRLF_BRIDGE.repairIssueNumber}/comments`),
+    api.list(`${repositoryPath}/issues/${record.repairPrNumber}/timeline`),
+    api.list(`${repositoryPath}/issues/${S1I_PR3_CRLF_BRIDGE.repairIssueNumber}/timeline`),
+  ]);
+  const repair = normalizeHistoricalPull(rawRepair);
+  if (!isOwnerIdentity(repairIssue.user) || repairIssue.pull_request ||
+      repairIssue.number !== S1I_PR3_CRLF_BRIDGE.repairIssueNumber ||
+      repairIssue.state !== 'closed' || !repair.merged) {
+    throw new Error('S1I_PR3_CRLF_BRIDGE_REPAIR_ISSUE_INVALID');
+  }
+  const contract = validateContract(extractMarkedJson(repairIssue.body, CONTRACT_MARKER));
+  const repairIssueBodySha256 = sha256Text(repairIssue.body);
+  if (contract.taskClass !== 'CONTROL_PLANE_CHANGE' ||
+      contract.authorizedBaseSha !== S1I_PR3_CRLF_BRIDGE.oldBaseSha ||
+      repairIssueBodySha256 !== S1I_PR3_CRLF_BRIDGE.repairIssueBodySha256) {
+    throw new Error('S1I_PR3_CRLF_BRIDGE_REPAIR_CONTRACT_INVALID');
+  }
+  exactStringSet(contract.allowedPaths, S1I_PR3_CRLF_BRIDGE_PATHS,
+    'S1I_PR3_CRLF_BRIDGE_REPAIR_PATHS');
+  const link = validateLink(repair, repairIssue, contract, repairIssueBodySha256);
+  if (link.approvalCommentId !== S1I_PR3_CRLF_BRIDGE.repairApprovalCommentId) {
+    throw new Error('S1I_PR3_CRLF_BRIDGE_REPAIR_APPROVAL_ID_INVALID');
+  }
+  const approval = currentApproval(
+    repairIssueComments.map(normalizeComment),
+    link.approvalCommentId,
+    contract,
+    repairIssueBodySha256,
+  );
+  const [{ data: mergeCommit }, { data: headCommit }, ci, activationCi, scopeValid,
+    { data: oldChildCommit }, { data: childHeadCommit }] = await Promise.all([
+    api.request(`${repositoryPath}/git/commits/${repair.mergeCommitSha}`),
+    api.request(`${repositoryPath}/git/commits/${repair.head.sha}`),
+    latestCi(api, repositoryPath, repair),
+    exactMainPushCi(api, repositoryPath, repair.mergeCommitSha),
+    validateProgramRootPull(api, repositoryPath, repair, {
+      authorizedBaseSha: S1I_PR3_CRLF_BRIDGE.oldBaseSha,
+      authorizedHeadRef: S1I_PR3_CRLF_BRIDGE.repairBranch,
+      exactAllowedPaths: S1I_PR3_CRLF_BRIDGE_PATHS,
+    }),
+    api.request(`${repositoryPath}/git/commits/${S1I_PR3_CRLF_BRIDGE.oldChildHeadSha}`),
+    api.request(`${repositoryPath}/git/commits/${child.pr.head.sha}`),
+  ]);
+  const reviews = validateProgramReview(repairComments.map(normalizeComment), {
+    programId: PROGRAM_ID,
+    childOrdinal: 2,
+    orchestratorSessionId: 'orchestrator-pr3-crlf-governance-repair-builder-v1',
+  }, repair);
+  validateHistoricalProgramReviews(reviews, repair);
+  const [{ data: oldChildTree }, { data: childHeadTree }] = await Promise.all([
+    api.request(`${repositoryPath}/git/trees/${oldChildCommit.tree.sha}?recursive=1`),
+    api.request(`${repositoryPath}/git/trees/${childHeadCommit.tree.sha}?recursive=1`),
+  ]);
+  const oldChildMap = treeMap(
+    oldChildCommit,
+    oldChildTree,
+    S1I_PR3_CRLF_BRIDGE.oldChildHeadSha,
+    'S1I_PR3_CRLF_BRIDGE_OLD_CHILD',
+  );
+  const childHeadMap = treeMap(
+    childHeadCommit,
+    childHeadTree,
+    child.pr.head.sha,
+    'S1I_PR3_CRLF_BRIDGE_NEW_CHILD',
+  );
+  const businessContentUnchanged = S1I_PR3_EXACT_PATHS.every((path) => {
+    const oldEntry = oldChildMap.get(path);
+    const currentEntry = childHeadMap.get(path);
+    return oldEntry?.type === 'blob' && oldEntry.mode === '100644' &&
+      currentEntry?.type === 'blob' && currentEntry.mode === '100644' &&
+      oldEntry.sha === currentEntry.sha;
+  });
+  const issueBodySha256 = sha256Text(issue.body);
+  const prBodySha256 = sha256Text(child.pr.body);
+  const previousChild = {
+    ...child,
+    binding: {
+      ...child.binding,
+      authorizedBaseSha: S1I_PR3_CRLF_BRIDGE.oldBaseSha,
+      expectedBaseSha: S1I_PR3_CRLF_BRIDGE.oldBaseSha,
+      previousMergeSha: S1I_PR3_CRLF_BRIDGE.oldBaseSha,
+    },
+    pr: {
+      ...child.pr,
+      head: { ...child.pr.head, sha: S1I_PR3_CRLF_BRIDGE.oldChildHeadSha },
+    },
+  };
+  const previousRefreeze = await loadS1iPr3Refreeze(
+    api,
+    repositoryPath,
+    previousChild,
+    issue,
+    S1I_PR3_CRLF_BRIDGE.previousIssueBodySha256,
+  );
+  const evidence = {
+    record,
+    comment,
+    repair,
+    mergeCommit,
+    headCommit,
+    ci,
+    activationCi,
+    approval,
+    reviews,
+    previousRefreeze,
+    prTimeline: normalizeProgramTimeline(prTimelineRaw),
+    issueTimeline: normalizeProgramTimeline(issueTimelineRaw),
+    repairIssueBodySha256,
+    repairIdentityAndScopeValid: scopeValid,
+    mainSha,
+    issueBodySha256,
+    prBodySha256,
+    issueAndPrBodyRewritesValid: validateS1iPr3BridgeBodyRewrites(
+      issue.body,
+      child.pr.body,
+      record,
+    ),
+    childHeadMergeValid: childHeadCommit.sha === record.newChildHeadSha &&
+      childHeadCommit.parents?.length === 2 &&
+      childHeadCommit.parents[0]?.sha === record.oldChildHeadSha &&
+      childHeadCommit.parents[1]?.sha === record.newBaseSha,
+    businessContentUnchanged,
+  };
+  validateS1iPr3CrlfBaselineBridge(evidence, child);
   return evidence;
 }
 
@@ -2721,11 +3126,23 @@ async function loadProgramContext(api, repositoryPath, currentIssue, normalizedP
   const migration = child2 && rootPr.mergeCommitSha === S1I_REPAIR.oldBaseSha
     ? await loadS1iMigration(api, repositoryPath, child2, child2Issue) : null;
   const child3 = history.find((entry) => entry.binding.childOrdinal === 3);
-  const pr3Refreeze = child3 && child3.binding.authorizedBaseSha !== child2?.pr?.mergeCommitSha
+  const pr3Refreeze = child3 &&
+    child3.binding.authorizedBaseSha === S1I_PR3_CRLF_BRIDGE.oldBaseSha
     ? await loadS1iPr3Refreeze(api, repositoryPath, child3, currentIssue) : null;
+  const pr3CrlfBridge = child3 &&
+    child3.binding.authorizedBaseSha !== child2?.pr?.mergeCommitSha &&
+    child3.binding.authorizedBaseSha !== S1I_PR3_CRLF_BRIDGE.oldBaseSha
+    ? await loadS1iPr3CrlfBaselineBridge(
+      api,
+      repositoryPath,
+      child3,
+      currentIssue,
+      mainCommit.sha,
+    ) : null;
   return {
     migration,
     pr3Refreeze,
+    pr3CrlfBridge,
     binding,
     link: programLink,
     now: observedAt,
