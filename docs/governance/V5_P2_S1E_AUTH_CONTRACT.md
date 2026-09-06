@@ -34,3 +34,15 @@ Nested manifests, alternative lockfiles, a second migration, historical migratio
 ## Acceptance and human gates
 
 Fixed quality gates must prove fresh and repeated migrations in disposable PostgreSQL, lint, strict type checking, unit/integration tests and build. Direct negative tests must cover missing identity, unknown email, token replay/expiry, session revocation/expiry, forged client identity, inactive actor/membership/Workspace and cross-Workspace access. Human review must separately verify dependency scope, additive SQL, cookie/session security, fail-closed mail behavior and the absence of production claims. The PR remains Draft; Ready and merge require separate owner decisions.
+
+## Compatibility maintenance after initial implementation
+
+The structural profile above applies to initial S1E implementation under `P2_AUTH_IMPLEMENTATION + P2_AUTH_DRAFT_ONLY` and remains unchanged.
+
+After that implementation is merged and its exact main-push Quality gates succeed, the narrowly defined compatibility-maintenance capability in `V5_P2_ENTRY_GOVERNANCE.md` may use `P2_IMPLEMENTATION + P2_DRAFT_ONLY`. Its purpose is to correct a reproduced interoperability defect in already tracked S1E implementation while preserving every fixed authentication, provisioning, mail, token/session, cookie, identity and Workspace-authorization decision in this contract.
+
+Such a maintenance task changes only its exact owner-approved existing authentication implementation paths and corresponding test paths, including a real Auth.js request-initialization regression. It changes no manifest, lockfile, dependency version, Prisma file or migration, and adds no authentication implementation module, route, login method, transport capability, production access, UI or authentication bypass. Existing negative/security tests remain applicable. A no-sink mail request must still fail closed, anonymous P2 access must still be denied, and a healthy initialization response is not evidence of a completed real-user login flow.
+
+The current compatibility-maintenance candidate is the outer Provider configuration extensibility defect: Auth.js needs to normalize its configuration object during request initialization. Any permitted fix must preserve the existing test-only mail transport and immutable verification-message payloads. Merely assigning an apiKey, catching the initialization error, returning a fabricated session, or weakening authorization does not satisfy acceptance.
+
+This maintenance path does not reopen Issue #39, revive the terminated S1I delegation, waive Owner approval or semantic review, grant Ready/merge authority, or relax the initial implementation profile. Scope expansion requires a new decision before execution.
