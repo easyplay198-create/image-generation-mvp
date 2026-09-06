@@ -96,6 +96,10 @@ enum AssetTaskOutputPurpose {
 
 enum AssetTaskStatus {
   QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  HARD_BLOCKED
 }
 
 enum ProjectStatus {
@@ -217,6 +221,11 @@ model Membership {
   @@unique([workspaceId, userActorId])
   @@index([userActorId, status])
   @@index([revokedByActorId])
+  back_GenerationAttemptSourceLink_scope_creator_fkey GenerationAttemptSourceLink[] @relation("GenerationAttemptSourceLink_scope_creator_fkey")
+  back_Artifact_scope_creator_fkey Artifact[] @relation("Artifact_scope_creator_fkey")
+  back_Artifact_scope_deletedBy_fkey Artifact[] @relation("Artifact_scope_deletedBy_fkey")
+  back_ArtifactRevision_scope_creator_fkey ArtifactRevision[] @relation("ArtifactRevision_scope_creator_fkey")
+  back_ArtifactRevisionSourceLink_scope_creator_fkey ArtifactRevisionSourceLink[] @relation("ArtifactRevisionSourceLink_scope_creator_fkey")
 }
 
 model ProductProject {
@@ -266,6 +275,9 @@ model SourceSnapshot {
   @@index([workspaceId, projectId, capturedAt])
   @@index([workspaceId, projectId, contentDigest])
   @@index([createdByActorId])
+  @@unique([workspaceId, projectId, sourceSnapshotId, contentDigest], map: "SourceSnapshot_scope_id_contentDigest_key")
+  back_GenerationAttemptSourceLink_scope_source_digest_fkey GenerationAttemptSourceLink[] @relation("GenerationAttemptSourceLink_scope_source_digest_fkey")
+  back_ArtifactRevisionSourceLink_scope_source_digest_fkey ArtifactRevisionSourceLink[] @relation("ArtifactRevisionSourceLink_scope_source_digest_fkey")
 }
 
 model ProductTruthRevision {
@@ -340,6 +352,18 @@ model AssetTask {
   @@index([workspaceId, projectId, truthRevisionId], map: "AssetTask_scope_truthRevision_idx")
   @@index([workspaceId, projectId, productSourceSnapshotId], map: "AssetTask_scope_productSource_idx")
   @@index([createdByActorId])
+  currentArtifactRevisionId String?
+  startedAt DateTime? @db.Timestamp(3)
+  finishedAt DateTime? @db.Timestamp(3)
+  failureCode String?
+  @@index([workspaceId, projectId, currentArtifactRevisionId], map: "AssetTask_scope_currentArtifactRevision_idx")
+  @@unique([workspaceId, projectId, assetTaskId, truthRevisionId], map: "AssetTask_scope_id_truthRevision_key")
+  @@unique([workspaceId, projectId, assetTaskId, productSourceSnapshotId], map: "AssetTask_scope_id_source_key")
+  back_GenerationAttempt_scope_task_truth_fkey GenerationAttempt[] @relation("GenerationAttempt_scope_task_truth_fkey")
+  back_GenerationAttemptSourceLink_scope_task_source_fkey GenerationAttemptSourceLink[] @relation("GenerationAttemptSourceLink_scope_task_source_fkey")
+  back_Artifact_scope_task_fkey Artifact? @relation("Artifact_scope_task_fkey")
+  rel_AssetTask_current_artifact_revision_direct_fkey ArtifactRevision? @relation("AssetTask_current_artifact_revision_direct_fkey", fields: [workspaceId, projectId, assetTaskId, currentArtifactRevisionId], references: [workspaceId, projectId, assetTaskId, artifactRevisionId], onDelete: Restrict, onUpdate: Cascade, map: "AssetTask_current_artifact_revision_direct_fkey")
+  rel_AssetTask_current_selected_equivalence_fkey Artifact? @relation("AssetTask_current_selected_equivalence_fkey", fields: [workspaceId, projectId, assetTaskId, currentArtifactRevisionId], references: [workspaceId, projectId, assetTaskId, selectedArtifactRevisionId], onDelete: Restrict, onUpdate: Cascade, map: "AssetTask_current_selected_equivalence_fkey")
 }
 
 model P2DomainEvent {
@@ -630,4 +654,218 @@ model Export {
 
   @@index([ownerId, projectId])
   @@index([designVersionId])
+}
+
+enum GenerationAttemptTrigger {
+  INITIAL
+  AUTO_REDO
+  USER_REDO
+}
+
+enum GenerationAttemptProvider {
+  INTERNAL_TEST
+}
+
+enum GenerationAttemptExecutorKind {
+  INTERNAL_TEST_PNG_V1
+}
+
+enum GenerationAttemptStatus {
+  QUEUED
+  SUBMITTING
+  SUBMITTED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELED
+  AMBIGUOUS
+}
+
+enum ArtifactLifecycleStatus {
+  ACTIVE
+  DELETED
+}
+
+enum ArtifactRevisionOrigin {
+  PROVIDER
+  SYSTEM_LAYOUT
+  USER_EDIT
+  PLATFORM_DERIVATION
+}
+
+enum ArtifactRevisionStatus {
+  CANDIDATE
+  ACCEPTED
+  REJECTED
+  SUPERSEDED
+  REVOKED
+}
+
+enum P2SourceLineageRole {
+  PRODUCT_SOURCE
+}
+
+enum P2SourceLineageStatus {
+  ACTIVE
+  INVALIDATED
+}
+
+model GenerationAttempt {
+  generationAttemptId String @id
+  workspaceId String
+  projectId String
+  assetTaskId String
+  trigger GenerationAttemptTrigger @default(INITIAL)
+  autoRedoOrdinal Int @default(0)
+  idempotencyKey String
+  inputFingerprint String
+  truthRevisionId String
+  brandKitRevisionId String?
+  visualPlanId String?
+  provider GenerationAttemptProvider @default(INTERNAL_TEST)
+  model String
+  promptVersion String
+  executorKind GenerationAttemptExecutorKind
+  status GenerationAttemptStatus
+  transportRetryCount Int @default(0)
+  providerRequestId String?
+  errorCode String?
+  usageBody Json?
+  costBody Json?
+  startedAt DateTime? @db.Timestamp(3)
+  finishedAt DateTime? @db.Timestamp(3)
+  createdAt DateTime @default(now()) @db.Timestamp(3)
+  @@unique([workspaceId, projectId, generationAttemptId], map: "GenerationAttempt_scope_id_key")
+  @@unique([workspaceId, projectId, assetTaskId, generationAttemptId], map: "GenerationAttempt_scope_task_id_key")
+  @@unique([workspaceId, projectId, assetTaskId, truthRevisionId, generationAttemptId], map: "GenerationAttempt_scope_task_truth_id_key")
+  @@unique([workspaceId, projectId, assetTaskId, trigger, autoRedoOrdinal], map: "GenerationAttempt_task_trigger_ordinal_key")
+  @@unique([workspaceId, idempotencyKey], map: "GenerationAttempt_idempotency_key")
+  @@index([workspaceId, projectId, assetTaskId, status, createdAt], map: "GenerationAttempt_scope_task_status_createdAt_idx")
+  @@index([workspaceId, projectId, truthRevisionId], map: "GenerationAttempt_scope_truthRevision_idx")
+  rel_GenerationAttempt_scope_task_truth_fkey AssetTask @relation("GenerationAttempt_scope_task_truth_fkey", fields: [workspaceId, projectId, assetTaskId, truthRevisionId], references: [workspaceId, projectId, assetTaskId, truthRevisionId], onDelete: Restrict, onUpdate: Cascade, map: "GenerationAttempt_scope_task_truth_fkey")
+  back_GenerationAttemptSourceLink_scope_attempt_fkey GenerationAttemptSourceLink[] @relation("GenerationAttemptSourceLink_scope_attempt_fkey")
+  back_ArtifactRevision_scope_attempt_fkey ArtifactRevision[] @relation("ArtifactRevision_scope_attempt_fkey")
+}
+
+model GenerationAttemptSourceLink {
+  linkId String @id
+  workspaceId String
+  projectId String
+  assetTaskId String
+  generationAttemptId String
+  sourceSnapshotId String
+  inputRole P2SourceLineageRole
+  inputOrder Int
+  contentDigestAtBinding String
+  linkStatus P2SourceLineageStatus @default(ACTIVE)
+  createdByActorId String
+  createdAt DateTime @default(now()) @db.Timestamp(3)
+  @@unique([workspaceId, projectId, generationAttemptId, sourceSnapshotId, inputRole], map: "GenerationAttemptSourceLink_attempt_source_role_key")
+  @@unique([workspaceId, projectId, generationAttemptId, inputOrder], map: "GenerationAttemptSourceLink_attempt_inputOrder_key")
+  @@unique([workspaceId, projectId, generationAttemptId, sourceSnapshotId, inputRole, inputOrder, contentDigestAtBinding], map: "GenerationAttemptSourceLink_inheritance_key")
+  @@index([workspaceId, projectId, sourceSnapshotId], map: "GenerationAttemptSourceLink_scope_source_idx")
+  @@index([createdByActorId], map: "GenerationAttemptSourceLink_createdByActorId_idx")
+  rel_GenerationAttemptSourceLink_scope_attempt_fkey GenerationAttempt @relation("GenerationAttemptSourceLink_scope_attempt_fkey", fields: [workspaceId, projectId, assetTaskId, generationAttemptId], references: [workspaceId, projectId, assetTaskId, generationAttemptId], onDelete: Restrict, onUpdate: Cascade, map: "GenerationAttemptSourceLink_scope_attempt_fkey")
+  rel_GenerationAttemptSourceLink_scope_task_source_fkey AssetTask @relation("GenerationAttemptSourceLink_scope_task_source_fkey", fields: [workspaceId, projectId, assetTaskId, sourceSnapshotId], references: [workspaceId, projectId, assetTaskId, productSourceSnapshotId], onDelete: Restrict, onUpdate: Cascade, map: "GenerationAttemptSourceLink_scope_task_source_fkey")
+  rel_GenerationAttemptSourceLink_scope_source_digest_fkey SourceSnapshot @relation("GenerationAttemptSourceLink_scope_source_digest_fkey", fields: [workspaceId, projectId, sourceSnapshotId, contentDigestAtBinding], references: [workspaceId, projectId, sourceSnapshotId, contentDigest], onDelete: Restrict, onUpdate: Cascade, map: "GenerationAttemptSourceLink_scope_source_digest_fkey")
+  rel_GenerationAttemptSourceLink_scope_creator_fkey Membership @relation("GenerationAttemptSourceLink_scope_creator_fkey", fields: [workspaceId, createdByActorId], references: [workspaceId, userActorId], onDelete: Restrict, onUpdate: Cascade, map: "GenerationAttemptSourceLink_scope_creator_fkey")
+  back_ArtifactRevisionSourceLink_inherited_binding_fkey ArtifactRevisionSourceLink[] @relation("ArtifactRevisionSourceLink_inherited_binding_fkey")
+}
+
+model Artifact {
+  artifactId String @id
+  workspaceId String
+  projectId String
+  assetTaskId String
+  assetClass AssetClass @default(IMAGE)
+  lifecycleStatus ArtifactLifecycleStatus @default(ACTIVE)
+  createdByActorId String
+  selectedArtifactRevisionId String?
+  deletedAt DateTime? @db.Timestamp(3)
+  deletedByActorId String?
+  createdAt DateTime @default(now()) @db.Timestamp(3)
+  @@unique([workspaceId, projectId, artifactId], map: "Artifact_scope_id_key")
+  @@unique([workspaceId, projectId, artifactId, assetTaskId], map: "Artifact_scope_id_task_key")
+  @@unique([workspaceId, projectId, assetTaskId], map: "Artifact_task_key")
+  @@unique([workspaceId, projectId, assetTaskId, selectedArtifactRevisionId], map: "Artifact_scope_task_selected_key")
+  @@index([workspaceId, projectId, lifecycleStatus, createdAt], map: "Artifact_scope_lifecycle_createdAt_idx")
+  @@index([createdByActorId], map: "Artifact_createdByActorId_idx")
+  @@index([deletedByActorId], map: "Artifact_deletedByActorId_idx")
+  rel_Artifact_scope_task_fkey AssetTask @relation("Artifact_scope_task_fkey", fields: [workspaceId, projectId, assetTaskId], references: [workspaceId, projectId, assetTaskId], onDelete: Restrict, onUpdate: Cascade, map: "Artifact_scope_task_fkey")
+  rel_Artifact_scope_creator_fkey Membership @relation("Artifact_scope_creator_fkey", fields: [workspaceId, createdByActorId], references: [workspaceId, userActorId], onDelete: Restrict, onUpdate: Cascade, map: "Artifact_scope_creator_fkey")
+  rel_Artifact_scope_deletedBy_fkey Membership? @relation("Artifact_scope_deletedBy_fkey", fields: [workspaceId, deletedByActorId], references: [workspaceId, userActorId], onDelete: Restrict, onUpdate: Cascade, map: "Artifact_scope_deletedBy_fkey")
+  back_ArtifactRevision_scope_artifact_task_fkey ArtifactRevision[] @relation("ArtifactRevision_scope_artifact_task_fkey")
+  rel_Artifact_selected_revision_fkey ArtifactRevision? @relation("Artifact_selected_revision_fkey", fields: [workspaceId, projectId, artifactId, selectedArtifactRevisionId], references: [workspaceId, projectId, artifactId, artifactRevisionId], onDelete: Restrict, onUpdate: Cascade, map: "Artifact_selected_revision_fkey")
+  back_AssetTask_current_selected_equivalence_fkey AssetTask[] @relation("AssetTask_current_selected_equivalence_fkey")
+}
+
+model ArtifactRevision {
+  artifactRevisionId String @id
+  workspaceId String
+  projectId String
+  artifactId String
+  assetTaskId String
+  revisionNumber Int @default(1)
+  kind AssetClass @default(IMAGE)
+  origin ArtifactRevisionOrigin @default(SYSTEM_LAYOUT)
+  truthRevisionId String
+  generationAttemptId String?
+  editableDocumentId String?
+  parentArtifactRevisionId String?
+  brandKitRevisionId String?
+  visualPlanId String?
+  inputBindingDigest String
+  contentDigest String
+  storageLocator String?
+  textBody String?
+  status ArtifactRevisionStatus @default(CANDIDATE)
+  mediaType String @default("image/png")
+  byteSize BigInt @default(68)
+  width Int @default(1)
+  height Int @default(1)
+  createdByActorId String?
+  createdAt DateTime @default(now()) @db.Timestamp(3)
+  @@unique([workspaceId, projectId, artifactRevisionId], map: "ArtifactRevision_scope_id_key")
+  @@unique([workspaceId, projectId, artifactId, artifactRevisionId], map: "ArtifactRevision_scope_artifact_id_key")
+  @@unique([workspaceId, projectId, artifactId, assetTaskId, artifactRevisionId], map: "ArtifactRevision_scope_artifact_task_id_key")
+  @@unique([workspaceId, projectId, assetTaskId, artifactRevisionId], map: "ArtifactRevision_scope_task_id_key")
+  @@unique([workspaceId, projectId, assetTaskId, artifactRevisionId, generationAttemptId], map: "ArtifactRevision_scope_task_id_attempt_key")
+  @@unique([workspaceId, projectId, artifactId, revisionNumber], map: "ArtifactRevision_artifact_revisionNumber_key")
+  @@unique([workspaceId, projectId, generationAttemptId], map: "ArtifactRevision_generationAttempt_key")
+  @@index([workspaceId, projectId, assetTaskId, status, createdAt], map: "ArtifactRevision_scope_task_status_createdAt_idx")
+  @@index([workspaceId, projectId, truthRevisionId], map: "ArtifactRevision_scope_truthRevision_idx")
+  @@index([workspaceId, projectId, contentDigest], map: "ArtifactRevision_scope_contentDigest_idx")
+  @@index([workspaceId, projectId, parentArtifactRevisionId], map: "ArtifactRevision_parent_idx")
+  rel_ArtifactRevision_scope_artifact_task_fkey Artifact @relation("ArtifactRevision_scope_artifact_task_fkey", fields: [workspaceId, projectId, artifactId, assetTaskId], references: [workspaceId, projectId, artifactId, assetTaskId], onDelete: Restrict, onUpdate: Cascade, map: "ArtifactRevision_scope_artifact_task_fkey")
+  rel_ArtifactRevision_scope_attempt_fkey GenerationAttempt? @relation("ArtifactRevision_scope_attempt_fkey", fields: [workspaceId, projectId, assetTaskId, truthRevisionId, generationAttemptId], references: [workspaceId, projectId, assetTaskId, truthRevisionId, generationAttemptId], onDelete: Restrict, onUpdate: Cascade, map: "ArtifactRevision_scope_attempt_fkey")
+  rel_ArtifactRevision_parent_same_artifact_fkey ArtifactRevision? @relation("ArtifactRevision_parent_same_artifact_fkey", fields: [workspaceId, projectId, artifactId, parentArtifactRevisionId], references: [workspaceId, projectId, artifactId, artifactRevisionId], onDelete: Restrict, onUpdate: Cascade, map: "ArtifactRevision_parent_same_artifact_fkey")
+  back_ArtifactRevision_parent_same_artifact_fkey ArtifactRevision[] @relation("ArtifactRevision_parent_same_artifact_fkey")
+  rel_ArtifactRevision_scope_creator_fkey Membership? @relation("ArtifactRevision_scope_creator_fkey", fields: [workspaceId, createdByActorId], references: [workspaceId, userActorId], onDelete: Restrict, onUpdate: Cascade, map: "ArtifactRevision_scope_creator_fkey")
+  back_ArtifactRevisionSourceLink_scope_revision_attempt_fkey ArtifactRevisionSourceLink[] @relation("ArtifactRevisionSourceLink_scope_revision_attempt_fkey")
+  back_Artifact_selected_revision_fkey Artifact[] @relation("Artifact_selected_revision_fkey")
+  back_AssetTask_current_artifact_revision_direct_fkey AssetTask[] @relation("AssetTask_current_artifact_revision_direct_fkey")
+}
+
+model ArtifactRevisionSourceLink {
+  linkId String @id
+  workspaceId String
+  projectId String
+  assetTaskId String
+  artifactRevisionId String
+  sourceSnapshotId String
+  sourceRole P2SourceLineageRole
+  inputOrder Int
+  contentDigestAtBinding String
+  inheritedFromAttemptId String
+  linkStatus P2SourceLineageStatus @default(ACTIVE)
+  createdByActorId String
+  createdAt DateTime @default(now()) @db.Timestamp(3)
+  @@unique([workspaceId, projectId, artifactRevisionId, sourceSnapshotId, sourceRole], map: "ArtifactRevisionSourceLink_revision_source_role_key")
+  @@unique([workspaceId, projectId, artifactRevisionId, inputOrder], map: "ArtifactRevisionSourceLink_revision_inputOrder_key")
+  @@index([workspaceId, projectId, sourceSnapshotId], map: "ArtifactRevisionSourceLink_scope_source_idx")
+  @@index([createdByActorId], map: "ArtifactRevisionSourceLink_createdByActorId_idx")
+  rel_ArtifactRevisionSourceLink_scope_revision_attempt_fkey ArtifactRevision @relation("ArtifactRevisionSourceLink_scope_revision_attempt_fkey", fields: [workspaceId, projectId, assetTaskId, artifactRevisionId, inheritedFromAttemptId], references: [workspaceId, projectId, assetTaskId, artifactRevisionId, generationAttemptId], onDelete: Restrict, onUpdate: Cascade, map: "ArtifactRevisionSourceLink_scope_revision_attempt_fkey")
+  rel_ArtifactRevisionSourceLink_inherited_binding_fkey GenerationAttemptSourceLink @relation("ArtifactRevisionSourceLink_inherited_binding_fkey", fields: [workspaceId, projectId, inheritedFromAttemptId, sourceSnapshotId, sourceRole, inputOrder, contentDigestAtBinding], references: [workspaceId, projectId, generationAttemptId, sourceSnapshotId, inputRole, inputOrder, contentDigestAtBinding], onDelete: Restrict, onUpdate: Cascade, map: "ArtifactRevisionSourceLink_inherited_binding_fkey")
+  rel_ArtifactRevisionSourceLink_scope_source_digest_fkey SourceSnapshot @relation("ArtifactRevisionSourceLink_scope_source_digest_fkey", fields: [workspaceId, projectId, sourceSnapshotId, contentDigestAtBinding], references: [workspaceId, projectId, sourceSnapshotId, contentDigest], onDelete: Restrict, onUpdate: Cascade, map: "ArtifactRevisionSourceLink_scope_source_digest_fkey")
+  rel_ArtifactRevisionSourceLink_scope_creator_fkey Membership @relation("ArtifactRevisionSourceLink_scope_creator_fkey", fields: [workspaceId, createdByActorId], references: [workspaceId, userActorId], onDelete: Restrict, onUpdate: Cascade, map: "ArtifactRevisionSourceLink_scope_creator_fkey")
 }
