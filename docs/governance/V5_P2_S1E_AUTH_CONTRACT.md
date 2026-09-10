@@ -46,3 +46,12 @@ Such a maintenance task changes only its exact owner-approved existing authentic
 The current compatibility-maintenance candidate is the outer Provider configuration extensibility defect: Auth.js needs to normalize its configuration object during request initialization. Any permitted fix must preserve the existing test-only mail transport and immutable verification-message payloads. Merely assigning an apiKey, catching the initialization error, returning a fabricated session, or weakening authorization does not satisfy acceptance.
 
 This maintenance path does not reopen Issue #39, revive the terminated S1I delegation, waive Owner approval or semantic review, grant Ready/merge authority, or relax the initial implementation profile. Scope expansion requires a new decision before execution.
+
+## Task-scoped local-acceptance mail sink (V5 single-image local slice)
+
+Owner approval `AI_VISION_V5_SINGLE_IMAGE_LOCAL_V1_20260910` adds one explicit opt-in local-acceptance mode only, governed by `docs/governance/V5_SINGLE_IMAGE_LOCAL_V1_CONTRACT.md`. In that mode the S1E profile may wire an in-process mail sink and a one-time claim capability solely for synthetic `@example.invalid` acceptance identities. Every fixed decision above is preserved: real Auth.js verification, callback, cookie, and session; database-persisted single-use token; exact token and session lifetimes; server-side identity mapping; one ACTIVE OWNER Membership and one ACTIVE Workspace.
+
+- Failure closed by default: outside the explicitly enabled isolated local mode, no sink is wired, the non-production transport still fails closed, and the claim route returns `404`. The mode is never enabled in production and is never inferred from `NODE_ENV` alone.
+- Claim safety: the claim route accepts only loopback requests and requires a process-random per-process nonce; each claim is atomic and single-use; URLs, tokens, cookies, session values, and nonces are never logged, reported, or committed.
+- No real email, SMTP account, API key, user account, browser profile, production data, provider credential, public sign-up, account linking, password, or recovery is read, printed, stored, committed, or uploaded.
+- This clause is not the compatibility-maintenance path above and cannot be invoked through it. It adds no login method, transport, UI, or capability outside the exact activated single-image implementation task, and it does not relax the initial S1E implementation profile.
