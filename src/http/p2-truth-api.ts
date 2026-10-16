@@ -39,6 +39,13 @@ type StoredResponse = Readonly<{
   body: Record<string, unknown>;
 }>;
 
+class P2IdempotencyInsertConflict extends Error {
+  constructor() {
+    super("P2_IDEMPOTENCY_INSERT_CONFLICT");
+    this.name = "P2IdempotencyInsertConflict";
+  }
+}
+
 export class P2TruthHttpError extends Error {
   constructor(
     readonly code: "VALIDATION_FAILED" | "IDEMPOTENCY_CONFLICT" | "INTERNAL_ERROR",
@@ -192,18 +199,23 @@ async function runIdempotent(
         if (existing) return replayStored(existing, key.fingerprint);
 
         const idempotencyRecordId = `p2_idempotency_${randomUUID()}`;
-        await transaction.p2IdempotencyRecord.create({
-          data: {
-            idempotencyRecordId,
-            workspaceId: context.workspaceId,
-            projectId: key.projectId,
-            actorId: context.userActorId,
-            operation: key.operation,
-            idempotencyKey: key.idempotencyKey,
-            requestFingerprint: key.fingerprint,
-            status: "IN_PROGRESS",
-          },
-        });
+        try {
+          await transaction.p2IdempotencyRecord.create({
+            data: {
+              idempotencyRecordId,
+              workspaceId: context.workspaceId,
+              projectId: key.projectId,
+              actorId: context.userActorId,
+              operation: key.operation,
+              idempotencyKey: key.idempotencyKey,
+              requestFingerprint: key.fingerprint,
+              status: "IN_PROGRESS",
+            },
+          });
+        } catch (error) {
+          if (!isPrismaUniqueConstraintViolation(error)) throw error;
+          throw new P2IdempotencyInsertConflict();
+        }
 
         const result = await operation(transaction, context);
         await transaction.p2IdempotencyRecord.update({
@@ -220,7 +232,7 @@ async function runIdempotent(
       dependencies.principalResolver,
     );
   } catch (error) {
-    if (!isIdempotencyUniqueConflict(error)) throw error;
+    if (!(error instanceof P2IdempotencyInsertConflict)) throw error;
     return readConcurrentReplay(dependencies, key);
   }
 }
@@ -398,16 +410,13 @@ function responseRecord(status: number, body: Record<string, unknown>): StoredRe
   return Object.freeze({ status, body: JSON.parse(JSON.stringify(body)) as Record<string, unknown> });
 }
 
-function isIdempotencyUniqueConflict(error: unknown): boolean {
-  if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") {
-    return false;
-  }
-  const target = error.meta?.target;
-  return Array.isArray(target) &&
-    target.length === 3 &&
-    target[0] === "workspaceId" &&
-    target[1] === "operation" &&
-    target[2] === "idempotencyKey";
+function isPrismaUniqueConstraintViolation(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "P2002"
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
